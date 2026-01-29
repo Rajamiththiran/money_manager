@@ -22,6 +22,14 @@ export interface CreateTransactionInput {
   memo: string | null;
 }
 
+export interface UpdateTransactionInput {
+  id: number;
+  date?: string;
+  amount?: number;
+  category_id?: number;
+  memo?: string;
+}
+
 export interface TransactionWithDetails {
   id: number;
   date: string;

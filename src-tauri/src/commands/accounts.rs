@@ -75,8 +75,8 @@ pub async fn get_accounts_with_balance(
         .await
         .map_err(|e| format!("Failed to calculate balance: {}", e))?;
 
-        let journal_balance: i64 = balance_row.get("balance");
-        let current_balance = account.initial_balance + journal_balance as f64;
+        let journal_balance: f64 = balance_row.get("balance");
+        let current_balance = account.initial_balance + journal_balance;
 
         results.push(AccountWithBalance {
             account,

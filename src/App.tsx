@@ -5,6 +5,7 @@ import Sidebar from "./components/Sidebar";
 import DashboardView from "./views/DashboardView";
 import AccountsView from "./views/AccountsView";
 import CategoriesView from "./views/CategoriesView";
+import TransactionsView from "./views/TransactionsView";
 
 type View =
   | "dashboard"
@@ -26,16 +27,7 @@ function AppContent() {
       case "categories":
         return <CategoriesView />;
       case "transactions":
-        return (
-          <div className="p-8">
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-              Transactions
-            </h1>
-            <p className="mt-4 text-gray-600 dark:text-gray-400">
-              Coming soon...
-            </p>
-          </div>
-        );
+        return <TransactionsView />;
       case "reports":
         return (
           <div className="p-8">

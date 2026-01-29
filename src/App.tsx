@@ -4,8 +4,15 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import Sidebar from "./components/Sidebar";
 import DashboardView from "./views/DashboardView";
 import AccountsView from "./views/AccountsView";
+import CategoriesView from "./views/CategoriesView";
 
-type View = "dashboard" | "accounts" | "transactions" | "reports" | "settings";
+type View =
+  | "dashboard"
+  | "accounts"
+  | "categories"
+  | "transactions"
+  | "reports"
+  | "settings";
 
 function AppContent() {
   const [currentView, setCurrentView] = useState<View>("dashboard");
@@ -16,6 +23,8 @@ function AppContent() {
         return <DashboardView />;
       case "accounts":
         return <AccountsView />;
+      case "categories":
+        return <CategoriesView />;
       case "transactions":
         return (
           <div className="p-8">

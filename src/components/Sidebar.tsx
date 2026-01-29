@@ -7,11 +7,18 @@ import {
   Cog6ToothIcon,
   Bars3Icon,
   XMarkIcon,
+  FolderIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import ThemeToggle from "./ThemeToggle";
 
-type View = "dashboard" | "accounts" | "transactions" | "reports" | "settings";
+type View =
+  | "dashboard"
+  | "accounts"
+  | "categories"
+  | "transactions"
+  | "reports"
+  | "settings";
 
 interface SidebarProps {
   currentView: View;
@@ -24,6 +31,7 @@ export default function Sidebar({ currentView, onViewChange }: SidebarProps) {
   const navigation = [
     { name: "Dashboard", icon: HomeIcon, view: "dashboard" as View },
     { name: "Accounts", icon: WalletIcon, view: "accounts" as View },
+    { name: "Categories", icon: FolderIcon, view: "categories" as View },
     { name: "Transactions", icon: ChartBarIcon, view: "transactions" as View },
     { name: "Reports", icon: ChartBarIcon, view: "reports" as View },
     { name: "Settings", icon: Cog6ToothIcon, view: "settings" as View },

@@ -45,3 +45,40 @@ export interface TransactionWithDetails {
   to_account_name: string | null;
   category_name: string | null;
 }
+
+// ============ NEW: Phase 2 Types ============
+
+export interface TransactionFilter {
+  start_date?: string;
+  end_date?: string;
+  transaction_type?: string; // INCOME, EXPENSE, TRANSFER
+  account_id?: number;
+  category_id?: number;
+  search_query?: string;
+  include_subcategories?: boolean;
+}
+
+export interface IncomeExpenseSummary {
+  total_income: number;
+  total_expense: number;
+  net_savings: number;
+  transaction_count: number;
+  start_date: string;
+  end_date: string;
+}
+
+export interface CategorySpending {
+  category_id: number;
+  category_name: string;
+  total_amount: number;
+  transaction_count: number;
+  percentage: number;
+}
+
+export interface DailySummary {
+  date: string;
+  total_income: number;
+  total_expense: number;
+  net: number;
+  transaction_count: number;
+}

@@ -63,6 +63,12 @@ pub fn run() {
             commands::transactions::create_transaction,
             commands::transactions::update_transaction,
             commands::transactions::delete_transaction,
+            // NEW: Filtering & Analytics commands
+            commands::transactions::get_transactions_filtered,
+            commands::transactions::get_income_expense_summary,
+            commands::transactions::get_category_spending,
+            commands::transactions::get_daily_summary,
+            commands::transactions::search_transactions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

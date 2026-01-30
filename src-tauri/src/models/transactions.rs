@@ -53,3 +53,44 @@ pub struct JournalEntry {
     pub credit: f64,
     pub created_at: String,
 }
+
+// ============ NEW: Filter Models ============
+
+#[derive(Debug, Deserialize)]
+pub struct TransactionFilter {
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+    pub transaction_type: Option<String>, // INCOME, EXPENSE, TRANSFER
+    pub account_id: Option<i64>,
+    pub category_id: Option<i64>,
+    pub search_query: Option<String>,
+    pub include_subcategories: Option<bool>, // For category filtering
+}
+
+#[derive(Debug, Serialize)]
+pub struct IncomeExpenseSummary {
+    pub total_income: f64,
+    pub total_expense: f64,
+    pub net_savings: f64,
+    pub transaction_count: i64,
+    pub start_date: String,
+    pub end_date: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CategorySpending {
+    pub category_id: i64,
+    pub category_name: String,
+    pub total_amount: f64,
+    pub transaction_count: i64,
+    pub percentage: f64, // Of total spending
+}
+
+#[derive(Debug, Serialize)]
+pub struct DailySummary {
+    pub date: String,
+    pub total_income: f64,
+    pub total_expense: f64,
+    pub net: f64,
+    pub transaction_count: i64,
+}

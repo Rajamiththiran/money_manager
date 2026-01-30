@@ -68,7 +68,7 @@ pub async fn get_accounts_with_balance(
 
         // Calculate current balance from journal entries
         let balance_row = sqlx::query(
-            "SELECT COALESCE(SUM(debit), 0) - COALESCE(SUM(credit), 0) as balance FROM journal_entries WHERE account_id = ?"
+            "SELECT CAST(COALESCE(SUM(debit), 0) - COALESCE(SUM(credit), 0) AS REAL) as balance FROM journal_entries WHERE account_id = ?"
         )
         .bind(account_id)
         .fetch_one(pool.inner())

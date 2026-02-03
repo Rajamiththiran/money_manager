@@ -9,13 +9,11 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            // Get app data directory from Tauri
             let app_data_dir = app
                 .path()
                 .app_data_dir()
                 .expect("Failed to get app data directory");
 
-            // CRITICAL: Create directory BEFORE database connection
             if let Err(e) = std::fs::create_dir_all(&app_data_dir) {
                 panic!("Failed to create app data directory: {}", e);
             }
@@ -25,7 +23,6 @@ pub fn run() {
 
             println!("Database location: {}", db_path.display());
 
-            // Initialize database
             let runtime = tokio::runtime::Runtime::new().unwrap();
             let pool = runtime.block_on(async {
                 db::init_database_with_url(&database_url)
@@ -57,13 +54,13 @@ pub fn run() {
             commands::categories::create_category,
             commands::categories::update_category,
             commands::categories::delete_category,
-            // Transaction commands
+            // Transaction commands (Phase 1)
             commands::transactions::get_transactions,
             commands::transactions::get_transactions_with_details,
             commands::transactions::create_transaction,
             commands::transactions::update_transaction,
             commands::transactions::delete_transaction,
-            // NEW: Filtering & Analytics commands
+            // Transaction commands (Phase 2 - Analytics)
             commands::transactions::get_transactions_filtered,
             commands::transactions::get_income_expense_summary,
             commands::transactions::get_category_spending,

@@ -8,17 +8,11 @@ import {
   Bars3Icon,
   XMarkIcon,
   FolderIcon,
+  CurrencyDollarIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 import ThemeToggle from "./ThemeToggle";
-
-type View =
-  | "dashboard"
-  | "accounts"
-  | "categories"
-  | "transactions"
-  | "reports"
-  | "settings";
+import type { View } from "../types/navigation";
 
 interface SidebarProps {
   currentView: View;
@@ -33,6 +27,7 @@ export default function Sidebar({ currentView, onViewChange }: SidebarProps) {
     { name: "Accounts", icon: WalletIcon, view: "accounts" as View },
     { name: "Categories", icon: FolderIcon, view: "categories" as View },
     { name: "Transactions", icon: ChartBarIcon, view: "transactions" as View },
+    { name: "Budgets", icon: CurrencyDollarIcon, view: "budgets" as View },
     { name: "Reports", icon: ChartBarIcon, view: "reports" as View },
     { name: "Settings", icon: Cog6ToothIcon, view: "settings" as View },
   ];

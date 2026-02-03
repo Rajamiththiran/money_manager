@@ -6,14 +6,8 @@ import DashboardView from "./views/DashboardView";
 import AccountsView from "./views/AccountsView";
 import CategoriesView from "./views/CategoriesView";
 import TransactionsView from "./views/TransactionsView";
-
-type View =
-  | "dashboard"
-  | "accounts"
-  | "categories"
-  | "transactions"
-  | "reports"
-  | "settings";
+import BudgetView from "./views/BudgetView";
+import type { View } from "./types/navigation";
 
 function AppContent() {
   const [currentView, setCurrentView] = useState<View>("dashboard");
@@ -28,6 +22,8 @@ function AppContent() {
         return <CategoriesView />;
       case "transactions":
         return <TransactionsView />;
+      case "budgets":
+        return <BudgetView />;
       case "reports":
         return (
           <div className="p-8">

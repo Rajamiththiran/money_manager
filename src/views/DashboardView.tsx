@@ -8,6 +8,8 @@ import {
   WalletIcon,
 } from "@heroicons/react/24/outline";
 import StatCard from "../components/StatCard";
+import CategorySpendingChart from "../components/CategorySpendingChart";
+import Calendar from "../components/Calendar";
 import type { AccountWithBalance } from "../types/account";
 import type { TransactionWithDetails } from "../types/transaction";
 
@@ -27,6 +29,10 @@ export default function DashboardView() {
     TransactionWithDetails[]
   >([]);
   const [loading, setLoading] = useState(true);
+  const [dateRange, setDateRange] = useState({ start: "", end: "" });
+  const [activeTab, setActiveTab] = useState<"overview" | "calendar">(
+    "overview",
+  );
 
   useEffect(() => {
     loadDashboardData();
@@ -35,7 +41,6 @@ export default function DashboardView() {
   const loadDashboardData = async () => {
     setLoading(true);
     try {
-      // Get current month date range
       const now = new Date();
       const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
       const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
@@ -43,7 +48,8 @@ export default function DashboardView() {
       const startDate = firstDay.toISOString().split("T")[0];
       const endDate = lastDay.toISOString().split("T")[0];
 
-      // Load all data in parallel
+      setDateRange({ start: startDate, end: endDate });
+
       const [accountsData, summaryData, transactionsData] = await Promise.all([
         invoke<AccountWithBalance[]>("get_accounts_with_balance"),
         invoke<IncomeExpenseSummary>("get_income_expense_summary", {
@@ -63,13 +69,11 @@ export default function DashboardView() {
     }
   };
 
-  // Calculate total balance from all accounts
   const totalBalance = accounts.reduce(
     (sum, acc) => sum + acc.current_balance,
     0,
   );
 
-  // Calculate previous month for comparison
   const getPreviousMonthSummary = () => {
     return {
       income: summary ? summary.total_income * 0.92 : 0,
@@ -180,85 +184,146 @@ export default function DashboardView() {
         />
       </div>
 
-      {/* Recent Transactions */}
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8">
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
-            Recent Transactions
-          </h2>
-          <button className="text-sm text-blue-600 dark:text-blue-400 hover:underline">
-            View All
-          </button>
-        </div>
-
-        {recentTransactions.length === 0 ? (
-          <p className="text-gray-600 dark:text-gray-400">
-            No transactions yet. Start tracking your finances!
-          </p>
-        ) : (
-          <div className="space-y-4">
-            {recentTransactions.map((txn) => (
-              <div
-                key={txn.id}
-                className="flex items-center justify-between p-4 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
-              >
-                <div className="flex items-center gap-4">
-                  <div
-                    className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                      txn.transaction_type === "INCOME"
-                        ? "bg-green-100 dark:bg-green-900/20"
-                        : txn.transaction_type === "EXPENSE"
-                          ? "bg-red-100 dark:bg-red-900/20"
-                          : "bg-blue-100 dark:bg-blue-900/20"
-                    }`}
-                  >
-                    {txn.transaction_type === "INCOME" ? (
-                      <ArrowTrendingUpIcon className="h-5 w-5 text-green-600 dark:text-green-400" />
-                    ) : txn.transaction_type === "EXPENSE" ? (
-                      <ArrowTrendingDownIcon className="h-5 w-5 text-red-600 dark:text-red-400" />
-                    ) : (
-                      <BanknotesIcon className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-                    )}
-                  </div>
-                  <div>
-                    <p className="font-medium text-gray-900 dark:text-white">
-                      {txn.category_name || txn.transaction_type}
-                    </p>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">
-                      {txn.account_name}
-                      {txn.to_account_name &&
-                        ` → ${txn.to_account_name}`} •{" "}
-                      {new Date(txn.date).toLocaleDateString()}
-                    </p>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <p
-                    className={`font-semibold ${
-                      txn.transaction_type === "INCOME"
-                        ? "text-green-600 dark:text-green-400"
-                        : txn.transaction_type === "EXPENSE"
-                          ? "text-red-600 dark:text-red-400"
-                          : "text-blue-600 dark:text-blue-400"
-                    }`}
-                  >
-                    {txn.transaction_type === "INCOME" ? "+" : "-"}Rs{" "}
-                    {txn.amount.toLocaleString("en-US", {
-                      minimumFractionDigits: 2,
-                      maximumFractionDigits: 2,
-                    })}
-                  </p>
-                  {txn.memo && (
-                    <p className="text-sm text-gray-500 dark:text-gray-400">
-                      {txn.memo}
-                    </p>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+      {/* Tabs */}
+      <div className="flex gap-2 mb-6 border-b border-gray-200 dark:border-gray-700">
+        <button
+          onClick={() => setActiveTab("overview")}
+          className={`px-6 py-3 font-medium border-b-2 transition-colors ${
+            activeTab === "overview"
+              ? "border-blue-500 text-blue-600 dark:text-blue-400"
+              : "border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+          }`}
+        >
+          Overview
+        </button>
+        <button
+          onClick={() => setActiveTab("calendar")}
+          className={`px-6 py-3 font-medium border-b-2 transition-colors ${
+            activeTab === "calendar"
+              ? "border-blue-500 text-blue-600 dark:text-blue-400"
+              : "border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+          }`}
+        >
+          Calendar
+        </button>
       </div>
+
+      {/* Tab Content */}
+      {activeTab === "overview" ? (
+        <>
+          {/* Two Column Layout */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+            {/* Category Spending Chart */}
+            <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8">
+              <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">
+                Spending by Category
+              </h2>
+              <CategorySpendingChart
+                startDate={dateRange.start}
+                endDate={dateRange.end}
+                transactionType="EXPENSE"
+              />
+            </div>
+
+            {/* Income Sources Chart */}
+            <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8">
+              <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">
+                Income Sources
+              </h2>
+              <CategorySpendingChart
+                startDate={dateRange.start}
+                endDate={dateRange.end}
+                transactionType="INCOME"
+              />
+            </div>
+          </div>
+
+          {/* Recent Transactions */}
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+                Recent Transactions
+              </h2>
+              <button className="text-sm text-blue-600 dark:text-blue-400 hover:underline">
+                View All
+              </button>
+            </div>
+
+            {recentTransactions.length === 0 ? (
+              <p className="text-gray-600 dark:text-gray-400">
+                No transactions yet. Start tracking your finances!
+              </p>
+            ) : (
+              <div className="space-y-4">
+                {recentTransactions.map((txn) => (
+                  <div
+                    key={txn.id}
+                    className="flex items-center justify-between p-4 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+                  >
+                    <div className="flex items-center gap-4">
+                      <div
+                        className={`w-10 h-10 rounded-full flex items-center justify-center ${
+                          txn.transaction_type === "INCOME"
+                            ? "bg-green-100 dark:bg-green-900/20"
+                            : txn.transaction_type === "EXPENSE"
+                              ? "bg-red-100 dark:bg-red-900/20"
+                              : "bg-blue-100 dark:bg-blue-900/20"
+                        }`}
+                      >
+                        {txn.transaction_type === "INCOME" ? (
+                          <ArrowTrendingUpIcon className="h-5 w-5 text-green-600 dark:text-green-400" />
+                        ) : txn.transaction_type === "EXPENSE" ? (
+                          <ArrowTrendingDownIcon className="h-5 w-5 text-red-600 dark:text-red-400" />
+                        ) : (
+                          <BanknotesIcon className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+                        )}
+                      </div>
+                      <div>
+                        <p className="font-medium text-gray-900 dark:text-white">
+                          {txn.category_name || txn.transaction_type}
+                        </p>
+                        <p className="text-sm text-gray-600 dark:text-gray-400">
+                          {txn.account_name}
+                          {txn.to_account_name &&
+                            ` → ${txn.to_account_name}`} •{" "}
+                          {new Date(txn.date).toLocaleDateString()}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <p
+                        className={`font-semibold ${
+                          txn.transaction_type === "INCOME"
+                            ? "text-green-600 dark:text-green-400"
+                            : txn.transaction_type === "EXPENSE"
+                              ? "text-red-600 dark:text-red-400"
+                              : "text-blue-600 dark:text-blue-400"
+                        }`}
+                      >
+                        {txn.transaction_type === "INCOME" ? "+" : "-"}Rs{" "}
+                        {txn.amount.toLocaleString("en-US", {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}
+                      </p>
+                      {txn.memo && (
+                        <p className="text-sm text-gray-500 dark:text-gray-400">
+                          {txn.memo}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      ) : (
+        /* Calendar View */
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8">
+          <Calendar />
+        </div>
+      )}
     </div>
   );
 }

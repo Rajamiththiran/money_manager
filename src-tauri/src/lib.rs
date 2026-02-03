@@ -54,36 +54,41 @@ pub fn run() {
             commands::categories::create_category,
             commands::categories::update_category,
             commands::categories::delete_category,
-            // Transaction commands (Phase 1)
+            // Transaction commands
             commands::transactions::get_transactions,
             commands::transactions::get_transactions_with_details,
             commands::transactions::create_transaction,
             commands::transactions::update_transaction,
             commands::transactions::delete_transaction,
-            // Transaction commands (Phase 2 - Analytics)
             commands::transactions::get_transactions_filtered,
             commands::transactions::get_income_expense_summary,
             commands::transactions::get_category_spending,
             commands::transactions::get_daily_summary,
             commands::transactions::search_transactions,
-            // Budget commands (Phase 3)
-            commands::budgets::get_budgets,
+            // Recurring commands
+            commands::recurring::create_recurring_transaction,
+            commands::recurring::get_recurring_transactions,
+            commands::recurring::update_recurring_transaction,
+            commands::recurring::delete_recurring_transaction,
+            commands::recurring::toggle_recurring_transaction,
+            commands::recurring::skip_next_occurrence,
+            // Budget commands
             commands::budgets::create_budget,
+            commands::budgets::get_budgets,
             commands::budgets::update_budget,
             commands::budgets::delete_budget,
             commands::budgets::get_budget_status,
             commands::budgets::get_all_budget_statuses,
             commands::budgets::get_budget_alerts,
-            // Recurring transaction commands (Phase 4)
-            commands::recurring::get_recurring_transactions,
-            commands::recurring::get_recurring_transactions_with_details,
-            commands::recurring::create_recurring_transaction,
-            commands::recurring::update_recurring_transaction,
-            commands::recurring::delete_recurring_transaction,
-            commands::recurring::toggle_recurring_transaction,
-            commands::recurring::skip_next_occurrence,
-            commands::recurring::get_upcoming_executions,
-            commands::recurring::process_recurring_transactions,
+            // Installment commands
+            commands::installments::create_installment_plan,
+            commands::installments::get_installment_plan,
+            commands::installments::get_installment_plans,
+            commands::installments::get_installment_plan_with_details,
+            commands::installments::process_installment_payment,
+            commands::installments::cancel_installment_plan,
+            commands::installments::delete_installment_plan,
+            commands::installments::get_upcoming_installments,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

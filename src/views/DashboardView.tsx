@@ -22,9 +22,14 @@ interface IncomeExpenseSummary {
   end_date: string;
 }
 
+type ComparisonMode = "month" | "year" | "quarter";
+
 export default function DashboardView() {
   const [accounts, setAccounts] = useState<AccountWithBalance[]>([]);
   const [summary, setSummary] = useState<IncomeExpenseSummary | null>(null);
+  const [prevSummary, setPrevSummary] = useState<IncomeExpenseSummary | null>(
+    null,
+  );
   const [recentTransactions, setRecentTransactions] = useState<
     TransactionWithDetails[]
   >([]);
@@ -33,34 +38,92 @@ export default function DashboardView() {
   const [activeTab, setActiveTab] = useState<"overview" | "calendar">(
     "overview",
   );
+  const [comparisonMode, setComparisonMode] = useState<ComparisonMode>("month");
 
   useEffect(() => {
     loadDashboardData();
-  }, []);
+  }, [comparisonMode]);
 
   const loadDashboardData = async () => {
     setLoading(true);
     try {
       const now = new Date();
+
+      // Current month
       const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
       const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-
       const startDate = firstDay.toISOString().split("T")[0];
       const endDate = lastDay.toISOString().split("T")[0];
 
       setDateRange({ start: startDate, end: endDate });
 
-      const [accountsData, summaryData, transactionsData] = await Promise.all([
-        invoke<AccountWithBalance[]>("get_accounts_with_balance"),
-        invoke<IncomeExpenseSummary>("get_income_expense_summary", {
-          startDate,
-          endDate,
-        }),
-        invoke<TransactionWithDetails[]>("get_transactions_with_details"),
-      ]);
+      // Calculate comparison period based on mode
+      let prevStartDate: string;
+      let prevEndDate: string;
+
+      switch (comparisonMode) {
+        case "month":
+          // Previous month
+          const prevFirstDay = new Date(
+            now.getFullYear(),
+            now.getMonth() - 1,
+            1,
+          );
+          const prevLastDay = new Date(now.getFullYear(), now.getMonth(), 0);
+          prevStartDate = prevFirstDay.toISOString().split("T")[0];
+          prevEndDate = prevLastDay.toISOString().split("T")[0];
+          break;
+
+        case "year":
+          // Same month last year
+          const prevYearFirstDay = new Date(
+            now.getFullYear() - 1,
+            now.getMonth(),
+            1,
+          );
+          const prevYearLastDay = new Date(
+            now.getFullYear() - 1,
+            now.getMonth() + 1,
+            0,
+          );
+          prevStartDate = prevYearFirstDay.toISOString().split("T")[0];
+          prevEndDate = prevYearLastDay.toISOString().split("T")[0];
+          break;
+
+        case "quarter":
+          // Previous quarter (3 months ago)
+          const prevQuarterFirstDay = new Date(
+            now.getFullYear(),
+            now.getMonth() - 3,
+            1,
+          );
+          const prevQuarterLastDay = new Date(
+            now.getFullYear(),
+            now.getMonth() - 2,
+            0,
+          );
+          prevStartDate = prevQuarterFirstDay.toISOString().split("T")[0];
+          prevEndDate = prevQuarterLastDay.toISOString().split("T")[0];
+          break;
+      }
+
+      const [accountsData, summaryData, prevSummaryData, transactionsData] =
+        await Promise.all([
+          invoke<AccountWithBalance[]>("get_accounts_with_balance"),
+          invoke<IncomeExpenseSummary>("get_income_expense_summary", {
+            startDate,
+            endDate,
+          }),
+          invoke<IncomeExpenseSummary>("get_income_expense_summary", {
+            startDate: prevStartDate,
+            endDate: prevEndDate,
+          }),
+          invoke<TransactionWithDetails[]>("get_transactions_with_details"),
+        ]);
 
       setAccounts(accountsData);
       setSummary(summaryData);
+      setPrevSummary(prevSummaryData);
       setRecentTransactions(transactionsData.slice(0, 10));
     } catch (error) {
       console.error("Failed to load dashboard data:", error);
@@ -74,21 +137,34 @@ export default function DashboardView() {
     0,
   );
 
-  const getPreviousMonthSummary = () => {
-    return {
-      income: summary ? summary.total_income * 0.92 : 0,
-      expense: summary ? summary.total_expense * 1.03 : 0,
-    };
+  // Calculate percentage changes
+  const incomeChange =
+    summary && prevSummary && prevSummary.total_income > 0
+      ? ((summary.total_income - prevSummary.total_income) /
+          prevSummary.total_income) *
+        100
+      : 0;
+
+  const expenseChange =
+    summary && prevSummary && prevSummary.total_expense > 0
+      ? ((summary.total_expense - prevSummary.total_expense) /
+          prevSummary.total_expense) *
+        100
+      : 0;
+
+  // Get comparison label
+  const getComparisonLabel = () => {
+    switch (comparisonMode) {
+      case "month":
+        return "vs Last Month";
+      case "year":
+        return "vs Last Year";
+      case "quarter":
+        return "vs 3 Months Ago";
+      default:
+        return "";
+    }
   };
-
-  const prevMonth = getPreviousMonthSummary();
-
-  const incomeChange = summary
-    ? ((summary.total_income - prevMonth.income) / prevMonth.income) * 100
-    : 0;
-  const expenseChange = summary
-    ? ((summary.total_expense - prevMonth.expense) / prevMonth.expense) * 100
-    : 0;
 
   if (loading) {
     return (
@@ -105,13 +181,34 @@ export default function DashboardView() {
 
   return (
     <div className="p-8">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-          Dashboard
-        </h1>
-        <p className="mt-1 text-gray-600 dark:text-gray-400">
-          Welcome back! Here's your financial overview
-        </p>
+      {/* Header with Comparison Selector */}
+      <div className="flex items-center justify-between mb-8">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
+            Dashboard
+          </h1>
+          <p className="mt-1 text-gray-600 dark:text-gray-400">
+            Welcome back! Here's your financial overview
+          </p>
+        </div>
+
+        {/* Comparison Mode Selector */}
+        <div className="flex items-center gap-3 bg-white dark:bg-gray-800 px-4 py-2 rounded-lg border border-gray-200 dark:border-gray-700">
+          <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+            Compare with:
+          </label>
+          <select
+            value={comparisonMode}
+            onChange={(e) =>
+              setComparisonMode(e.target.value as ComparisonMode)
+            }
+            className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="month">Previous Month</option>
+            <option value="quarter">3 Months Ago</option>
+            <option value="year">Same Month Last Year</option>
+          </select>
+        </div>
       </div>
 
       {/* Stats Grid */}
@@ -137,10 +234,14 @@ export default function DashboardView() {
           }`}
           icon={<ArrowTrendingUpIcon className="h-6 w-6" />}
           color="green"
-          trend={{
-            value: `${Math.abs(incomeChange).toFixed(1)}%`,
-            isPositive: incomeChange >= 0,
-          }}
+          trend={
+            incomeChange !== 0
+              ? {
+                  value: `${Math.abs(incomeChange).toFixed(1)}% ${getComparisonLabel()}`,
+                  isPositive: incomeChange >= 0,
+                }
+              : undefined
+          }
         />
         <StatCard
           title="Expenses (Month)"
@@ -154,10 +255,14 @@ export default function DashboardView() {
           }`}
           icon={<ArrowTrendingDownIcon className="h-6 w-6" />}
           color="red"
-          trend={{
-            value: `${Math.abs(expenseChange).toFixed(1)}%`,
-            isPositive: expenseChange < 0,
-          }}
+          trend={
+            expenseChange !== 0
+              ? {
+                  value: `${Math.abs(expenseChange).toFixed(1)}% ${getComparisonLabel()}`,
+                  isPositive: expenseChange < 0,
+                }
+              : undefined
+          }
         />
         <StatCard
           title="Net Savings"
@@ -171,16 +276,14 @@ export default function DashboardView() {
           }`}
           icon={<BanknotesIcon className="h-6 w-6" />}
           color="purple"
-          trend={{
-            value: `${
-              summary
-                ? ((summary.net_savings / summary.total_income) * 100).toFixed(
-                    1,
-                  )
-                : 0
-            }%`,
-            isPositive: summary ? summary.net_savings > 0 : false,
-          }}
+          trend={
+            summary && summary.total_income > 0
+              ? {
+                  value: `${((summary.net_savings / summary.total_income) * 100).toFixed(1)}% of income`,
+                  isPositive: summary.net_savings > 0,
+                }
+              : undefined
+          }
         />
       </div>
 

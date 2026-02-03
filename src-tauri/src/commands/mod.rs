@@ -2,4 +2,5 @@
 pub mod accounts;
 pub mod budgets;
 pub mod categories;
+pub mod recurring;
 pub mod transactions;

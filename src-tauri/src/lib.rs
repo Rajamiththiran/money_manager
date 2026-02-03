@@ -66,6 +66,14 @@ pub fn run() {
             commands::transactions::get_category_spending,
             commands::transactions::get_daily_summary,
             commands::transactions::search_transactions,
+            // Budget commands (Phase 3)
+            commands::budgets::get_budgets,
+            commands::budgets::create_budget,
+            commands::budgets::update_budget,
+            commands::budgets::delete_budget,
+            commands::budgets::get_budget_status,
+            commands::budgets::get_all_budget_statuses,
+            commands::budgets::get_budget_alerts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

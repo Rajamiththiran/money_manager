@@ -74,6 +74,16 @@ pub fn run() {
             commands::budgets::get_budget_status,
             commands::budgets::get_all_budget_statuses,
             commands::budgets::get_budget_alerts,
+            // Recurring transaction commands (Phase 4)
+            commands::recurring::get_recurring_transactions,
+            commands::recurring::get_recurring_transactions_with_details,
+            commands::recurring::create_recurring_transaction,
+            commands::recurring::update_recurring_transaction,
+            commands::recurring::delete_recurring_transaction,
+            commands::recurring::toggle_recurring_transaction,
+            commands::recurring::skip_next_occurrence,
+            commands::recurring::get_upcoming_executions,
+            commands::recurring::process_recurring_transactions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

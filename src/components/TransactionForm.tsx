@@ -1,5 +1,5 @@
 // File: src/components/TransactionForm.tsx
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Input from "./Input";
 import Select from "./Select";
 import Button from "./Button";
@@ -13,6 +13,15 @@ interface TransactionFormProps {
   categories: CategoryWithChildren[];
   onSubmit: (input: CreateTransactionInput) => Promise<void>;
   onCancel: () => void;
+  prefillData?: {
+    transaction_type?: "INCOME" | "EXPENSE" | "TRANSFER";
+    account_id?: number;
+    category_id?: number;
+    from_account_id?: number;
+    to_account_id?: number;
+    amount?: number;
+    memo?: string;
+  };
 }
 
 type TransactionType = "INCOME" | "EXPENSE" | "TRANSFER";
@@ -22,19 +31,45 @@ export default function TransactionForm({
   categories,
   onSubmit,
   onCancel,
+  prefillData,
 }: TransactionFormProps) {
-  const [type, setType] = useState<TransactionType>("EXPENSE");
+  const [type, setType] = useState<TransactionType>(
+    prefillData?.transaction_type || "EXPENSE",
+  );
   const [formData, setFormData] = useState({
     date: new Date().toISOString().split("T")[0],
-    amount: "",
-    account_id: accounts[0]?.id || 0,
-    to_account_id: accounts[1]?.id || 0,
-    category_id: 0,
-    memo: "",
+    amount: prefillData?.amount?.toString() || "",
+    account_id:
+      prefillData?.account_id ||
+      prefillData?.from_account_id ||
+      accounts[0]?.id ||
+      0,
+    to_account_id: prefillData?.to_account_id || accounts[1]?.id || 0,
+    category_id: prefillData?.category_id || 0,
+    memo: prefillData?.memo || "",
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showCalculator, setShowCalculator] = useState(false);
+
+  useEffect(() => {
+    // Update form when prefillData changes
+    if (prefillData) {
+      if (prefillData.transaction_type) setType(prefillData.transaction_type);
+      setFormData({
+        date: new Date().toISOString().split("T")[0],
+        amount: prefillData.amount?.toString() || "",
+        account_id:
+          prefillData.account_id ||
+          prefillData.from_account_id ||
+          accounts[0]?.id ||
+          0,
+        to_account_id: prefillData.to_account_id || accounts[1]?.id || 0,
+        category_id: prefillData.category_id || 0,
+        memo: prefillData.memo || "",
+      });
+    }
+  }, [prefillData, accounts]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -117,7 +152,7 @@ export default function TransactionForm({
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
       <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">
-        New Transaction
+        {prefillData ? "New Transaction from Template" : "New Transaction"}
       </h2>
 
       {/* Transaction Type Tabs */}

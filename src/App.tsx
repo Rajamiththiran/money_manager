@@ -1,5 +1,5 @@
 // File: src/App.tsx
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Sidebar from "./components/Sidebar";
 import DashboardView from "./views/DashboardView";
@@ -7,10 +7,23 @@ import AccountsView from "./views/AccountsView";
 import CategoriesView from "./views/CategoriesView";
 import TransactionsView from "./views/TransactionsView";
 import BudgetView from "./views/BudgetView";
+import AdvancedView from "./views/AdvancedView";
 import type { View } from "./types/navigation";
 
 function AppContent() {
   const [currentView, setCurrentView] = useState<View>("dashboard");
+
+  useEffect(() => {
+    // Listen for navigation events from templates
+    const handleNavigate = () => {
+      setCurrentView("transactions");
+    };
+
+    window.addEventListener("navigate-to-transactions", handleNavigate);
+    return () => {
+      window.removeEventListener("navigate-to-transactions", handleNavigate);
+    };
+  }, []);
 
   const renderView = () => {
     switch (currentView) {
@@ -24,6 +37,8 @@ function AppContent() {
         return <TransactionsView />;
       case "budgets":
         return <BudgetView />;
+      case "advanced":
+        return <AdvancedView />;
       case "reports":
         return (
           <div className="p-8">

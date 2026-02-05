@@ -25,9 +25,21 @@ export default function TransactionsView() {
   const [showForm, setShowForm] = useState(false);
   const [editingTransaction, setEditingTransaction] =
     useState<TransactionWithDetails | null>(null);
+  const [prefillData, setPrefillData] = useState<any>(null);
 
   useEffect(() => {
     loadData();
+  }, []);
+
+  useEffect(() => {
+    // Check if there's template data in sessionStorage
+    const templateData = sessionStorage.getItem("templateData");
+    if (templateData) {
+      const parsedData = JSON.parse(templateData);
+      setPrefillData(parsedData);
+      setShowForm(true);
+      sessionStorage.removeItem("templateData"); // Clear after use
+    }
   }, []);
 
   const loadData = async () => {
@@ -55,6 +67,7 @@ export default function TransactionsView() {
       await invoke("create_transaction", { input });
       await loadData();
       setShowForm(false);
+      setPrefillData(null);
     } catch (err) {
       setError(err as string);
       throw err;
@@ -96,6 +109,16 @@ export default function TransactionsView() {
     // This will be handled in TransactionForm component
   };
 
+  const handleNewTransaction = () => {
+    setPrefillData(null);
+    setShowForm(!showForm);
+  };
+
+  const handleCancelForm = () => {
+    setShowForm(false);
+    setPrefillData(null);
+  };
+
   return (
     <div className="p-8">
       {/* Header */}
@@ -109,7 +132,7 @@ export default function TransactionsView() {
           </p>
         </div>
         <Button
-          onClick={() => setShowForm(!showForm)}
+          onClick={handleNewTransaction}
           icon={<PlusIcon className="h-5 w-5" />}
           variant={showForm ? "secondary" : "primary"}
         >
@@ -133,7 +156,8 @@ export default function TransactionsView() {
             accounts={accounts}
             categories={categories}
             onSubmit={handleCreate}
-            onCancel={() => setShowForm(false)}
+            onCancel={handleCancelForm}
+            prefillData={prefillData}
           />
         </div>
       )}

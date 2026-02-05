@@ -8,6 +8,7 @@ import CategoriesView from "./views/CategoriesView";
 import TransactionsView from "./views/TransactionsView";
 import BudgetView from "./views/BudgetView";
 import AdvancedView from "./views/AdvancedView";
+import ReportsView from "./views/ReportsView";
 import type { View } from "./types/navigation";
 
 function AppContent() {
@@ -40,16 +41,7 @@ function AppContent() {
       case "advanced":
         return <AdvancedView />;
       case "reports":
-        return (
-          <div className="p-8">
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-              Reports
-            </h1>
-            <p className="mt-4 text-gray-600 dark:text-gray-400">
-              Coming soon...
-            </p>
-          </div>
-        );
+        return <ReportsView />;
       case "settings":
         return (
           <div className="p-8">

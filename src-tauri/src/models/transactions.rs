@@ -54,7 +54,7 @@ pub struct JournalEntry {
     pub created_at: String,
 }
 
-// ============ NEW: Filter Models ============
+// ============ Filter Models ============
 
 #[derive(Debug, Deserialize)]
 pub struct TransactionFilter {
@@ -91,6 +91,18 @@ pub struct DailySummary {
     pub date: String,
     pub total_income: f64,
     pub total_expense: f64,
+    pub net: f64,
+    pub transaction_count: i64,
+}
+
+// ============ NEW: Report Models ============
+
+#[derive(Debug, Serialize)]
+pub struct MonthlyTrend {
+    pub month: String,      // e.g., "2026-01"
+    pub month_name: String, // e.g., "January 2026"
+    pub income: f64,
+    pub expense: f64,
     pub net: f64,
     pub transaction_count: i64,
 }

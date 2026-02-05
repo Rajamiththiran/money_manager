@@ -65,6 +65,7 @@ pub fn run() {
             commands::transactions::get_category_spending,
             commands::transactions::get_daily_summary,
             commands::transactions::search_transactions,
+            commands::transactions::get_monthly_trends,
             // Recurring commands
             commands::recurring::create_recurring_transaction,
             commands::recurring::get_recurring_transactions,

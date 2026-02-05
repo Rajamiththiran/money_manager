@@ -1,7 +1,7 @@
 // File: src-tauri/src/commands/transactions.rs
 use crate::models::transactions::{
-    CategorySpending, CreateTransactionInput, DailySummary, IncomeExpenseSummary, Transaction,
-    TransactionFilter, TransactionWithDetails, UpdateTransactionInput,
+    CategorySpending, CreateTransactionInput, DailySummary, IncomeExpenseSummary, MonthlyTrend,
+    Transaction, TransactionFilter, TransactionWithDetails, UpdateTransactionInput,
 };
 use sqlx::{Row, SqlitePool};
 use tauri::State;
@@ -565,6 +565,77 @@ pub async fn search_transactions(
             account_name: row.get("account_name"),
             to_account_name: row.get("to_account_name"),
             category_name: row.get("category_name"),
+        })
+        .collect())
+}
+
+// ==================== PHASE 6: REPORTS & ANALYTICS ====================
+
+#[tauri::command]
+pub async fn get_monthly_trends(
+    pool: State<'_, SqlitePool>,
+    months: i32,
+) -> Result<Vec<MonthlyTrend>, String> {
+    let rows = sqlx::query(
+        "SELECT 
+            strftime('%Y-%m', date) as month,
+            CAST(COALESCE(SUM(CASE WHEN type = 'INCOME' THEN amount ELSE 0 END), 0) AS REAL) as income,
+            CAST(COALESCE(SUM(CASE WHEN type = 'EXPENSE' THEN amount ELSE 0 END), 0) AS REAL) as expense,
+            COUNT(*) as transaction_count
+         FROM transactions
+         WHERE date >= date('now', ? || ' months')
+         GROUP BY strftime('%Y-%m', date)
+         ORDER BY month ASC",
+    )
+    .bind(format!("-{}", months))
+    .fetch_all(pool.inner())
+    .await
+    .map_err(|e| format!("Failed to fetch monthly trends: {}", e))?;
+
+    Ok(rows
+        .iter()
+        .map(|row| {
+            let month: String = row.get("month");
+            let income: f64 = row.get("income");
+            let expense: f64 = row.get("expense");
+
+            // Parse month for display name
+            let parts: Vec<&str> = month.split('-').collect();
+            let month_name = if parts.len() == 2 {
+                let month_num: u32 = parts[1].parse().unwrap_or(1);
+                let month_names = [
+                    "January",
+                    "February",
+                    "March",
+                    "April",
+                    "May",
+                    "June",
+                    "July",
+                    "August",
+                    "September",
+                    "October",
+                    "November",
+                    "December",
+                ];
+                format!(
+                    "{} {}",
+                    month_names
+                        .get((month_num - 1) as usize)
+                        .unwrap_or(&"Unknown"),
+                    parts[0]
+                )
+            } else {
+                month.clone()
+            };
+
+            MonthlyTrend {
+                month,
+                month_name,
+                income,
+                expense,
+                net: income - expense,
+                transaction_count: row.get("transaction_count"),
+            }
         })
         .collect())
 }

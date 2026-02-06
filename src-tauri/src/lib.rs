@@ -121,6 +121,13 @@ pub fn run() {
             commands::credit_cards::settle_credit_card,
             commands::credit_cards::get_credit_card_summaries,
             commands::credit_cards::process_auto_settlements,
+            // Analytics commands (Phase 7)
+            commands::analytics::get_net_worth_history,
+            commands::analytics::get_account_balance_history,
+            commands::analytics::get_top_categories,
+            commands::analytics::get_subcategory_breakdown,
+            commands::analytics::get_year_over_year_comparison,
+            commands::analytics::get_analytics_dashboard,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

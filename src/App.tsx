@@ -1,6 +1,7 @@
 // File: src/App.tsx
 import { useState, useEffect } from "react";
 import { ThemeProvider } from "./contexts/ThemeContext";
+import { AccentColorProvider } from "./contexts/AccentColorContext";
 import { ToastProvider } from "./components/Toast";
 import Sidebar from "./components/Sidebar";
 import DashboardView from "./views/DashboardView";
@@ -10,17 +11,16 @@ import TransactionsView from "./views/TransactionsView";
 import BudgetView from "./views/BudgetView";
 import AdvancedView from "./views/AdvancedView";
 import ReportsView from "./views/ReportsView";
+import SettingsView from "./views/SettingsView";
 import type { View } from "./types/navigation";
 
 function AppContent() {
   const [currentView, setCurrentView] = useState<View>("dashboard");
 
   useEffect(() => {
-    // Listen for navigation events from templates
     const handleNavigate = () => {
       setCurrentView("transactions");
     };
-
     window.addEventListener("navigate-to-transactions", handleNavigate);
     return () => {
       window.removeEventListener("navigate-to-transactions", handleNavigate);
@@ -44,16 +44,7 @@ function AppContent() {
       case "reports":
         return <ReportsView />;
       case "settings":
-        return (
-          <div className="p-8">
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-              Settings
-            </h1>
-            <p className="mt-4 text-gray-600 dark:text-gray-400">
-              Coming soon...
-            </p>
-          </div>
-        );
+        return <SettingsView />;
       default:
         return <DashboardView />;
     }
@@ -70,9 +61,11 @@ function AppContent() {
 function App() {
   return (
     <ThemeProvider>
-      <ToastProvider>
-        <AppContent />
-      </ToastProvider>
+      <AccentColorProvider>
+        <ToastProvider>
+          <AppContent />
+        </ToastProvider>
+      </AccentColorProvider>
     </ThemeProvider>
   );
 }

@@ -2,6 +2,7 @@
 pub mod account;
 pub mod budget;
 pub mod category;
+pub mod credit_card;
 pub mod installment;
 pub mod recurring;
 pub mod template;

@@ -1,6 +1,7 @@
 // File: src/App.tsx
 import { useState, useEffect } from "react";
 import { ThemeProvider } from "./contexts/ThemeContext";
+import { ToastProvider } from "./components/Toast";
 import Sidebar from "./components/Sidebar";
 import DashboardView from "./views/DashboardView";
 import AccountsView from "./views/AccountsView";
@@ -69,7 +70,9 @@ function AppContent() {
 function App() {
   return (
     <ThemeProvider>
-      <AppContent />
+      <ToastProvider>
+        <AppContent />
+      </ToastProvider>
     </ThemeProvider>
   );
 }

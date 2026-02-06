@@ -5,4 +5,5 @@ pub mod categories;
 pub mod export;
 pub mod installments;
 pub mod recurring;
+pub mod templates;
 pub mod transactions;

@@ -413,6 +413,104 @@ pub async fn skip_next_occurrence(
     Ok(new_date_str)
 }
 
+/// Execute a single recurring transaction immediately and advance the schedule.
+#[tauri::command]
+pub async fn execute_recurring_transaction(
+    pool: State<'_, SqlitePool>,
+    recurring_id: i64,
+) -> Result<i64, String> {
+    // Fetch the recurring transaction
+    let row = sqlx::query(
+        "SELECT id, transaction_type, amount, account_id, to_account_id, category_id,
+                frequency, interval_days, next_execution_date, end_date, is_active
+         FROM recurring_transactions
+         WHERE id = ?",
+    )
+    .bind(recurring_id)
+    .fetch_optional(pool.inner())
+    .await
+    .map_err(|e| format!("Database error: {}", e))?
+    .ok_or_else(|| "Recurring transaction not found".to_string())?;
+
+    let is_active: i64 = row.get("is_active");
+    if is_active == 0 {
+        return Err(
+            "Cannot execute a paused recurring transaction. Activate it first.".to_string(),
+        );
+    }
+
+    let transaction_type: String = row.get("transaction_type");
+    let amount: f64 = row.get("amount");
+    let account_id: i64 = row.get("account_id");
+    let to_account_id: Option<i64> = row.get("to_account_id");
+    let category_id: Option<i64> = row.get("category_id");
+    let frequency: String = row.get("frequency");
+    let interval_days: i64 = row.get("interval_days");
+    let next_execution_date: String = row.get("next_execution_date");
+    let end_date: Option<String> = row.get("end_date");
+
+    let today = chrono::Local::now().naive_local().date();
+    let today_str = today.format("%Y-%m-%d").to_string();
+
+    // Create the actual transaction via the existing create_transaction command
+    let transaction_input = CreateTransactionInput {
+        date: today_str.clone(),
+        transaction_type: transaction_type.clone(),
+        amount,
+        account_id,
+        to_account_id,
+        category_id,
+        memo: Some("Auto-generated from recurring transaction".to_string()),
+    };
+
+    let txn_id = crate::commands::transactions::create_transaction(pool.clone(), transaction_input)
+        .await
+        .map_err(|e| format!("Failed to create transaction: {}", e))?;
+
+    // Calculate next execution date
+    let current_date = NaiveDate::parse_from_str(&next_execution_date, "%Y-%m-%d")
+        .map_err(|_| "Invalid next execution date in database".to_string())?;
+
+    let new_next_date = calculate_next_execution_date(&current_date, &frequency, interval_days)?;
+
+    // Check if new date exceeds end date → deactivate
+    let mut should_deactivate = false;
+    if let Some(end_date_str) = &end_date {
+        if let Ok(end_date_parsed) = NaiveDate::parse_from_str(end_date_str, "%Y-%m-%d") {
+            if new_next_date > end_date_parsed {
+                should_deactivate = true;
+            }
+        }
+    }
+
+    if should_deactivate {
+        sqlx::query(
+            "UPDATE recurring_transactions 
+             SET last_executed_date = ?, execution_count = execution_count + 1, is_active = 0
+             WHERE id = ?",
+        )
+        .bind(&today_str)
+        .bind(recurring_id)
+        .execute(pool.inner())
+        .await
+        .map_err(|e| format!("Failed to update recurring transaction: {}", e))?;
+    } else {
+        sqlx::query(
+            "UPDATE recurring_transactions 
+             SET next_execution_date = ?, last_executed_date = ?, execution_count = execution_count + 1
+             WHERE id = ?",
+        )
+        .bind(new_next_date.format("%Y-%m-%d").to_string())
+        .bind(&today_str)
+        .bind(recurring_id)
+        .execute(pool.inner())
+        .await
+        .map_err(|e| format!("Failed to update recurring transaction: {}", e))?;
+    }
+
+    Ok(txn_id)
+}
+
 #[tauri::command]
 pub async fn get_upcoming_executions(
     pool: State<'_, SqlitePool>,

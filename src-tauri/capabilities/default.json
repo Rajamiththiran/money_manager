@@ -11,6 +11,8 @@
     "dialog:allow-ask",
     "fs:allow-write-text-file",
     "fs:allow-read-text-file",
-    "fs:allow-exists"
+    "fs:allow-exists",
+    "fs:allow-app-write",
+    "fs:allow-download-write"
   ]
 }

@@ -8,6 +8,8 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             let app_data_dir = app
                 .path()
@@ -90,6 +92,10 @@ pub fn run() {
             commands::installments::cancel_installment_plan,
             commands::installments::delete_installment_plan,
             commands::installments::get_upcoming_installments,
+            // Export commands
+            commands::export::export_transactions_csv,
+            commands::export::export_transactions_json,
+            commands::export::export_full_backup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

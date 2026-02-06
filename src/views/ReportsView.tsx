@@ -163,6 +163,15 @@ export default function ReportsView() {
     setFilters(newFilters);
   };
 
+  // Convert ReportFilters to ExportFilter format
+  const getExportFilters = () => ({
+    start_date: filters.startDate,
+    end_date: filters.endDate,
+    transaction_type: filters.transactionType,
+    category_id: filters.categoryId,
+    account_id: filters.accountId,
+  });
+
   const tabs = [
     { id: "overview" as ReportTab, label: "Overview", icon: ChartBarIcon },
     { id: "trends" as ReportTab, label: "Trends", icon: ArrowsRightLeftIcon },
@@ -187,7 +196,7 @@ export default function ReportsView() {
             Analyze your financial data and track trends
           </p>
         </div>
-        <ExportMenu transactions={transactions} />
+        <ExportMenu filters={getExportFilters()} />
       </div>
 
       {/* Filters */}

@@ -2,6 +2,7 @@
 pub mod accounts;
 pub mod budgets;
 pub mod categories;
+pub mod credit_cards;
 pub mod export;
 pub mod installments;
 pub mod recurring;

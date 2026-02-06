@@ -106,6 +106,21 @@ pub fn run() {
             commands::export::export_transactions_csv,
             commands::export::export_transactions_json,
             commands::export::export_full_backup,
+            // Credit Card commands
+            commands::credit_cards::create_credit_card_settings,
+            commands::credit_cards::update_credit_card_settings,
+            commands::credit_cards::delete_credit_card_settings,
+            commands::credit_cards::get_credit_card_settings_by_account,
+            commands::credit_cards::get_all_credit_cards,
+            commands::credit_cards::get_credit_card_details,
+            commands::credit_cards::get_current_billing_cycle,
+            commands::credit_cards::get_current_cycle_transactions,
+            commands::credit_cards::generate_statement,
+            commands::credit_cards::get_statements,
+            commands::credit_cards::get_statement_with_transactions,
+            commands::credit_cards::settle_credit_card,
+            commands::credit_cards::get_credit_card_summaries,
+            commands::credit_cards::process_auto_settlements,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

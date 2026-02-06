@@ -1,9 +1,10 @@
 // File: src/components/Sidebar.tsx
 import ThemeToggle from "./ThemeToggle";
+import type { View } from "../types/navigation";
 
 interface SidebarProps {
-  currentView: string;
-  onViewChange: (view: any) => void;
+  currentView: View;
+  onViewChange: (view: View) => void;
 }
 
 export default function Sidebar({ currentView, onViewChange }: SidebarProps) {
@@ -30,10 +31,10 @@ export default function Sidebar({ currentView, onViewChange }: SidebarProps) {
           {menuItems.map((item) => (
             <li key={item.id}>
               <button
-                onClick={() => onViewChange(item.id)}
+                onClick={() => onViewChange(item.id as View)}
                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
                   currentView === item.id
-                    ? "bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 font-medium"
+                    ? "bg-accent-50 dark:bg-accent-900/20 text-accent-600 dark:text-accent-400 font-medium"
                     : "text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
                 }`}
               >
@@ -45,7 +46,19 @@ export default function Sidebar({ currentView, onViewChange }: SidebarProps) {
         </ul>
       </nav>
 
-      <div className="p-4 border-t border-gray-200 dark:border-gray-700">
+      {/* Settings + Theme at bottom */}
+      <div className="p-4 border-t border-gray-200 dark:border-gray-700 space-y-2">
+        <button
+          onClick={() => onViewChange("settings" as View)}
+          className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg transition-colors ${
+            currentView === "settings"
+              ? "bg-accent-50 dark:bg-accent-900/20 text-accent-600 dark:text-accent-400 font-medium"
+              : "text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+          }`}
+        >
+          <span className="text-xl">⚙️</span>
+          <span className="text-sm">Settings</span>
+        </button>
         <ThemeToggle />
       </div>
     </aside>

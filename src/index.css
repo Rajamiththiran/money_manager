@@ -9,6 +9,17 @@
     box-sizing: border-box;
   }
 
+  :root {
+    /* Default accent: blue */
+    --accent-400: 96 165 250;
+    --accent-500: 59 130 246;
+    --accent-600: 37 99 235;
+    --accent-700: 29 78 216;
+    --accent-ring: 59 130 246;
+    --accent-bg50: 239 246 255;
+    --accent-bg900-20: 30 58 138;
+  }
+
   body {
     @apply bg-white dark:bg-gray-900 text-gray-900 dark:text-white;
     font-family:
@@ -21,6 +32,64 @@
     @apply w-full h-screen;
   }
 }
+
+/* ── Accent color utility classes ──────────────────────────────── */
+/* These use CSS variables set by AccentColorContext */
+
+@layer utilities {
+  .bg-accent-400 {
+    background-color: rgb(var(--accent-400));
+  }
+  .bg-accent-500 {
+    background-color: rgb(var(--accent-500));
+  }
+  .bg-accent-600 {
+    background-color: rgb(var(--accent-600));
+  }
+  .bg-accent-700 {
+    background-color: rgb(var(--accent-700));
+  }
+  .bg-accent-50 {
+    background-color: rgb(var(--accent-bg50));
+  }
+  .bg-accent-900\/20 {
+    background-color: rgb(var(--accent-bg900-20) / 0.2);
+  }
+
+  .text-accent-400 {
+    color: rgb(var(--accent-400));
+  }
+  .text-accent-500 {
+    color: rgb(var(--accent-500));
+  }
+  .text-accent-600 {
+    color: rgb(var(--accent-600));
+  }
+  .text-accent-700 {
+    color: rgb(var(--accent-700));
+  }
+
+  .ring-accent-500 {
+    --tw-ring-color: rgb(var(--accent-ring));
+  }
+
+  .border-accent-500 {
+    border-color: rgb(var(--accent-500));
+  }
+
+  .focus\:ring-accent-500:focus {
+    --tw-ring-color: rgb(var(--accent-ring));
+  }
+
+  .hover\:bg-accent-700:hover {
+    background-color: rgb(var(--accent-700));
+  }
+  .hover\:bg-accent-600:hover {
+    background-color: rgb(var(--accent-600));
+  }
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────────── */
 
 ::-webkit-scrollbar {
   width: 10px;

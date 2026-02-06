@@ -1,123 +1,190 @@
 // File: src/components/InstallmentPlanList.tsx
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  ChevronDown,
+  ChevronUp,
+  Trash2,
+  Ban,
+  CheckCircle2,
+  CreditCard,
+  Clock,
+  CircleDollarSign,
+} from "lucide-react";
 import Button from "./Button";
+import { useToast } from "./Toast";
+import type {
+  InstallmentPlanWithDetails,
+  InstallmentPayment,
+} from "../types/installment";
 
-interface InstallmentPlan {
-  id: number;
-  name: string;
-  total_amount: number;
-  num_installments: number;
-  amount_per_installment: number;
-  account_id: number;
-  category_id: number;
-  start_date: string;
-  frequency: string;
-  memo: string | null;
-  created_at: string;
+interface InstallmentPlanListProps {
+  refreshKey?: number;
 }
 
-interface InstallmentPayment {
-  id: number;
-  installment_plan_id: number;
-  payment_number: number;
-  due_date: string;
-  amount: number;
-  is_paid: boolean;
-  transaction_id: number | null;
-  paid_at: string | null;
-}
+const STATUS_STYLES: Record<string, { bg: string; text: string }> = {
+  ACTIVE: {
+    bg: "bg-emerald-100 dark:bg-emerald-900/40",
+    text: "text-emerald-800 dark:text-emerald-300",
+  },
+  COMPLETED: {
+    bg: "bg-blue-100 dark:bg-blue-900/40",
+    text: "text-blue-800 dark:text-blue-300",
+  },
+  CANCELLED: {
+    bg: "bg-gray-200 dark:bg-gray-600",
+    text: "text-gray-700 dark:text-gray-300",
+  },
+};
 
-interface InstallmentPlanWithPayments {
-  plan: InstallmentPlan;
-  payments: InstallmentPayment[];
-  total_paid: number;
-  total_remaining: number;
-}
-
-export default function InstallmentPlanList() {
-  const [plans, setPlans] = useState<InstallmentPlanWithPayments[]>([]);
+export default function InstallmentPlanList({
+  refreshKey,
+}: InstallmentPlanListProps) {
+  const { success, error: showError, warning } = useToast();
+  const [plans, setPlans] = useState<InstallmentPlanWithDetails[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedPlan, setExpandedPlan] = useState<number | null>(null);
-  const [accounts, setAccounts] = useState<any[]>([]);
-  const [categories, setCategories] = useState<any[]>([]);
+  const [processingPayment, setProcessingPayment] = useState<number | null>(
+    null,
+  );
 
   useEffect(() => {
-    loadData();
-  }, []);
+    loadPlans();
+  }, [refreshKey]);
 
-  const loadData = async () => {
+  const loadPlans = async () => {
     try {
-      const [plansData, accountsData, categoriesData] = await Promise.all([
-        invoke<InstallmentPlanWithPayments[]>("get_all_installment_plans"),
-        invoke<any[]>("get_accounts"),
-        invoke<any[]>("get_categories"),
-      ]);
-      setPlans(plansData);
-      setAccounts(accountsData);
-      setCategories(categoriesData);
-    } catch (error) {
-      console.error("Failed to load installment plans:", error);
+      // Fetch all plans, then fetch details for each
+      const plansData = await invoke<
+        Array<{
+          id: number;
+          name: string;
+          total_amount: number;
+          num_installments: number;
+          amount_per_installment: number;
+          account_id: number;
+          category_id: number;
+          start_date: string;
+          frequency: string;
+          next_due_date: string;
+          installments_paid: number;
+          total_paid: number;
+          status: string;
+          memo: string | null;
+          created_at: string;
+          updated_at: string;
+        }>
+      >("get_installment_plans", { statusFilter: null });
+
+      // Fetch details for each plan (includes payments, account name, category name)
+      const detailedPlans = await Promise.all(
+        plansData.map((plan) =>
+          invoke<InstallmentPlanWithDetails>(
+            "get_installment_plan_with_details",
+            {
+              planId: plan.id,
+            },
+          ),
+        ),
+      );
+
+      setPlans(detailedPlans);
+    } catch (err) {
+      console.error("Failed to load installment plans:", err);
+      showError("Failed to load plans", String(err));
     } finally {
       setLoading(false);
     }
   };
 
-  const handlePayInstallment = async (paymentId: number) => {
+  const handlePayInstallment = async (planId: number, planName: string) => {
+    setProcessingPayment(planId);
     try {
-      await invoke("pay_installment", { paymentId });
-      await loadData();
-    } catch (error) {
-      console.error("Failed to pay installment:", error);
-      alert("Error: " + error);
+      await invoke<InstallmentPayment>("process_installment_payment", {
+        planId,
+      });
+      await loadPlans();
+      success(
+        "Payment Processed",
+        `Installment payment for "${planName}" recorded.`,
+      );
+    } catch (err) {
+      showError("Payment Failed", String(err));
+    } finally {
+      setProcessingPayment(null);
     }
   };
 
-  const handleDeletePlan = async (planId: number) => {
+  const handleCancelPlan = async (planId: number, planName: string) => {
+    if (
+      !confirm(`Cancel installment plan "${planName}"? This cannot be undone.`)
+    )
+      return;
+
+    try {
+      await invoke("cancel_installment_plan", { planId });
+      await loadPlans();
+      warning("Plan Cancelled", `"${planName}" has been cancelled.`);
+    } catch (err) {
+      showError("Failed to cancel", String(err));
+    }
+  };
+
+  const handleDeletePlan = async (planId: number, planName: string) => {
     if (
       !confirm(
-        "Delete this installment plan? All associated transactions will remain.",
+        `Delete "${planName}"? Plans with existing payments cannot be deleted — cancel instead.`,
       )
     )
       return;
 
     try {
       await invoke("delete_installment_plan", { planId });
-      await loadData();
-    } catch (error) {
-      console.error("Failed to delete plan:", error);
-      alert("Error: " + error);
+      await loadPlans();
+      success("Plan Deleted", `"${planName}" has been removed.`);
+    } catch (err) {
+      showError("Cannot Delete", String(err));
     }
   };
 
-  const toggleExpand = (planId: number) => {
-    setExpandedPlan(expandedPlan === planId ? null : planId);
+  const formatDate = (dateStr: string) => {
+    try {
+      return new Date(dateStr + "T00:00:00").toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+    } catch {
+      return dateStr;
+    }
   };
 
-  const getAccountName = (accountId: number) => {
-    const account = accounts.find((a) => a.id === accountId);
-    return account?.name || "Unknown";
-  };
-
-  const getCategoryName = (categoryId: number) => {
-    const category = categories.find((c) => c.id === categoryId);
-    return category?.name || "Unknown";
+  const getProgressColor = (percent: number) => {
+    if (percent >= 100) return "bg-emerald-500";
+    if (percent >= 75) return "bg-blue-500";
+    if (percent >= 50) return "bg-amber-500";
+    return "bg-gray-400";
   };
 
   if (loading) {
     return (
-      <div className="text-center py-8 text-gray-600 dark:text-gray-400">
-        Loading installment plans...
+      <div className="flex items-center justify-center py-12">
+        <div className="animate-pulse text-gray-500 dark:text-gray-400">
+          Loading installment plans...
+        </div>
       </div>
     );
   }
 
   if (plans.length === 0) {
     return (
-      <div className="text-center py-12 text-gray-500 dark:text-gray-400">
-        <p className="text-lg mb-2">No installment plans yet</p>
-        <p className="text-sm">
-          Break down large expenses into monthly payments
+      <div className="text-center py-16">
+        <CreditCard className="w-12 h-12 mx-auto text-gray-300 dark:text-gray-600 mb-4" />
+        <p className="text-lg font-medium text-gray-500 dark:text-gray-400 mb-1">
+          No installment plans
+        </p>
+        <p className="text-sm text-gray-400 dark:text-gray-500">
+          Break down large expenses into manageable monthly payments
         </p>
       </div>
     );
@@ -126,151 +193,222 @@ export default function InstallmentPlanList() {
   return (
     <div className="space-y-4">
       {plans.map((item) => {
+        const plan = item.plan;
         const progressPercent =
-          (item.total_paid / item.plan.total_amount) * 100;
-        const isExpanded = expandedPlan === item.plan.id;
-        const paidCount = item.payments.filter((p) => p.is_paid).length;
+          plan.total_amount > 0
+            ? Math.min((plan.total_paid / plan.total_amount) * 100, 100)
+            : 0;
+        const isExpanded = expandedPlan === plan.id;
+        const statusStyle = STATUS_STYLES[plan.status] || STATUS_STYLES.ACTIVE;
+        const isActive = plan.status === "ACTIVE";
 
         return (
           <div
-            key={item.plan.id}
-            className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700"
+            key={plan.id}
+            className={`
+              bg-white dark:bg-gray-800 rounded-xl border
+              ${
+                isActive
+                  ? "border-gray-200 dark:border-gray-700"
+                  : "border-gray-300 dark:border-gray-600"
+              }
+              transition-all duration-200
+            `}
           >
-            <div className="flex justify-between items-start mb-3">
-              <div className="flex-1">
-                <h3 className="font-semibold text-gray-900 dark:text-white mb-1">
-                  {item.plan.name}
-                </h3>
-                <div className="text-sm text-gray-600 dark:text-gray-400">
-                  <span>Account: {getAccountName(item.plan.account_id)}</span>
-                  <span className="mx-2">•</span>
-                  <span>
-                    Category: {getCategoryName(item.plan.category_id)}
-                  </span>
-                </div>
-                <div className="text-sm text-gray-600 dark:text-gray-400">
-                  <span>
-                    {paidCount} of {item.plan.num_installments} paid
-                  </span>
-                  <span className="mx-2">•</span>
-                  <span>
-                    LKR {item.plan.amount_per_installment.toFixed(2)} / month
-                  </span>
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="text-sm text-gray-500 dark:text-gray-400">
-                  Total
-                </div>
-                <div className="text-xl font-bold text-gray-900 dark:text-white">
-                  LKR {item.plan.total_amount.toLocaleString()}
-                </div>
-              </div>
-            </div>
-
-            {/* Progress Bar */}
-            <div className="mb-3">
-              <div className="flex justify-between text-sm mb-1">
-                <span className="text-gray-600 dark:text-gray-400">
-                  Progress
-                </span>
-                <span className="font-medium text-gray-900 dark:text-white">
-                  {progressPercent.toFixed(1)}%
-                </span>
-              </div>
-              <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-                <div
-                  className="bg-blue-600 h-2 rounded-full transition-all"
-                  style={{ width: `${progressPercent}%` }}
-                />
-              </div>
-              <div className="flex justify-between text-sm mt-1">
-                <span className="text-green-600 dark:text-green-400">
-                  Paid: LKR {item.total_paid.toLocaleString()}
-                </span>
-                <span className="text-red-600 dark:text-red-400">
-                  Remaining: LKR {item.total_remaining.toLocaleString()}
-                </span>
-              </div>
-            </div>
-
-            {item.plan.memo && (
-              <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
-                {item.plan.memo}
-              </p>
-            )}
-
-            {/* Action Buttons */}
-            <div className="flex gap-2">
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => toggleExpand(item.plan.id)}
-              >
-                {isExpanded ? "Hide" : "Show"} Payment Schedule
-              </Button>
-              <Button
-                variant="danger"
-                size="sm"
-                onClick={() => handleDeletePlan(item.plan.id)}
-              >
-                Delete Plan
-              </Button>
-            </div>
-
-            {/* Payment Schedule */}
-            {isExpanded && (
-              <div className="mt-4 border-t border-gray-200 dark:border-gray-700 pt-4">
-                <h4 className="font-medium text-gray-900 dark:text-white mb-3">
-                  Payment Schedule
-                </h4>
-                <div className="space-y-2">
-                  {item.payments.map((payment) => (
-                    <div
-                      key={payment.id}
-                      className={`flex justify-between items-center p-3 rounded ${
-                        payment.is_paid
-                          ? "bg-green-50 dark:bg-green-900/20"
-                          : "bg-gray-50 dark:bg-gray-700/50"
-                      }`}
+            <div className="p-5">
+              {/* Header */}
+              <div className="flex items-start justify-between mb-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="font-semibold text-gray-900 dark:text-white truncate">
+                      {plan.name}
+                    </h3>
+                    <span
+                      className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusStyle.bg} ${statusStyle.text}`}
                     >
-                      <div className="flex items-center gap-3">
-                        <span className="font-medium text-gray-900 dark:text-white">
-                          #{payment.payment_number}
-                        </span>
-                        <span className="text-sm text-gray-600 dark:text-gray-400">
-                          Due: {new Date(payment.due_date).toLocaleDateString()}
-                        </span>
-                        {payment.is_paid && payment.paid_at && (
-                          <span className="text-xs text-green-600 dark:text-green-400">
-                            Paid:{" "}
-                            {new Date(payment.paid_at).toLocaleDateString()}
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className="font-semibold text-gray-900 dark:text-white">
-                          LKR {payment.amount.toLocaleString()}
-                        </span>
-                        {!payment.is_paid && (
-                          <Button
-                            size="sm"
-                            onClick={() => handlePayInstallment(payment.id)}
-                          >
-                            Pay Now
-                          </Button>
-                        )}
-                        {payment.is_paid && (
-                          <span className="text-green-600 dark:text-green-400 font-medium">
-                            ✓ Paid
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  ))}
+                      {plan.status}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
+                    <span>{item.account_name}</span>
+                    <span>•</span>
+                    <span>{item.category_name}</span>
+                    <span>•</span>
+                    <span>
+                      {plan.installments_paid} of {plan.num_installments} paid
+                    </span>
+                  </div>
+                </div>
+                <div className="text-right ml-4 flex-shrink-0">
+                  <div className="text-sm text-gray-500 dark:text-gray-400">
+                    Total
+                  </div>
+                  <div className="text-xl font-bold text-gray-900 dark:text-white">
+                    LKR{" "}
+                    {plan.total_amount.toLocaleString("en-US", {
+                      minimumFractionDigits: 2,
+                    })}
+                  </div>
                 </div>
               </div>
-            )}
+
+              {/* Progress */}
+              <div className="mb-3">
+                <div className="flex justify-between text-xs mb-1.5">
+                  <span className="text-gray-500 dark:text-gray-400">
+                    LKR{" "}
+                    {plan.amount_per_installment.toLocaleString("en-US", {
+                      minimumFractionDigits: 2,
+                    })}{" "}
+                    / {plan.frequency.toLowerCase()}
+                  </span>
+                  <span className="font-medium text-gray-700 dark:text-gray-200">
+                    {progressPercent.toFixed(0)}%
+                  </span>
+                </div>
+                <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2.5">
+                  <div
+                    className={`h-2.5 rounded-full transition-all duration-500 ${getProgressColor(progressPercent)}`}
+                    style={{ width: `${progressPercent}%` }}
+                  />
+                </div>
+                <div className="flex justify-between text-xs mt-1.5">
+                  <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                    Paid: LKR{" "}
+                    {plan.total_paid.toLocaleString("en-US", {
+                      minimumFractionDigits: 2,
+                    })}
+                  </span>
+                  <span className="text-red-500 dark:text-red-400 font-medium">
+                    Remaining: LKR{" "}
+                    {item.remaining_amount.toLocaleString("en-US", {
+                      minimumFractionDigits: 2,
+                    })}
+                  </span>
+                </div>
+              </div>
+
+              {plan.memo && (
+                <p className="text-sm text-gray-500 dark:text-gray-400 italic mb-3">
+                  {plan.memo}
+                </p>
+              )}
+
+              {/* Actions */}
+              <div className="flex gap-2 flex-wrap">
+                {isActive && (
+                  <Button
+                    size="sm"
+                    onClick={() => handlePayInstallment(plan.id, plan.name)}
+                    disabled={processingPayment === plan.id}
+                    icon={<CircleDollarSign className="w-3.5 h-3.5" />}
+                  >
+                    {processingPayment === plan.id
+                      ? "Processing..."
+                      : `Pay LKR ${item.next_payment_amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}`}
+                  </Button>
+                )}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setExpandedPlan(isExpanded ? null : plan.id)}
+                  icon={
+                    isExpanded ? (
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    ) : (
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    )
+                  }
+                >
+                  {isExpanded ? "Hide" : "Show"} Payments
+                </Button>
+                {isActive && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => handleCancelPlan(plan.id, plan.name)}
+                    icon={<Ban className="w-3.5 h-3.5" />}
+                  >
+                    Cancel Plan
+                  </Button>
+                )}
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onClick={() => handleDeletePlan(plan.id, plan.name)}
+                  icon={<Trash2 className="w-3.5 h-3.5" />}
+                >
+                  Delete
+                </Button>
+              </div>
+
+              {/* Payment Schedule (Expanded) */}
+              {isExpanded && (
+                <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+                  <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3 flex items-center gap-2">
+                    <Clock className="w-4 h-4" />
+                    Payment Schedule
+                  </h4>
+                  {item.payments.length > 0 ? (
+                    <div className="space-y-2">
+                      {item.payments.map((payment) => {
+                        const isPaid = payment.status === "PAID";
+                        return (
+                          <div
+                            key={payment.installment_number}
+                            className={`
+                              flex items-center justify-between p-3 rounded-lg text-sm
+                              ${
+                                isPaid
+                                  ? "bg-emerald-50 dark:bg-emerald-900/20"
+                                  : "bg-gray-50 dark:bg-gray-700/40"
+                              }
+                            `}
+                          >
+                            <div className="flex items-center gap-3">
+                              {isPaid ? (
+                                <CheckCircle2 className="w-4 h-4 text-emerald-500 flex-shrink-0" />
+                              ) : (
+                                <div className="w-4 h-4 rounded-full border-2 border-gray-300 dark:border-gray-500 flex-shrink-0" />
+                              )}
+                              <span className="font-medium text-gray-700 dark:text-gray-200">
+                                #{payment.installment_number}
+                              </span>
+                              <span className="text-gray-500 dark:text-gray-400">
+                                Due: {formatDate(payment.due_date)}
+                              </span>
+                              {isPaid && payment.paid_date && (
+                                <span className="text-xs text-emerald-600 dark:text-emerald-400">
+                                  Paid: {formatDate(payment.paid_date)}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <span className="font-semibold text-gray-800 dark:text-gray-100">
+                                LKR{" "}
+                                {payment.amount.toLocaleString("en-US", {
+                                  minimumFractionDigits: 2,
+                                })}
+                              </span>
+                              {isPaid && (
+                                <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                                  ✓ Paid
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-400 dark:text-gray-500 text-center py-4">
+                      No payment history yet. Click "Pay" to make the first
+                      installment.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         );
       })}

@@ -71,10 +71,14 @@ pub fn run() {
             // Recurring commands
             commands::recurring::create_recurring_transaction,
             commands::recurring::get_recurring_transactions,
+            commands::recurring::get_recurring_transactions_with_details,
             commands::recurring::update_recurring_transaction,
             commands::recurring::delete_recurring_transaction,
             commands::recurring::toggle_recurring_transaction,
             commands::recurring::skip_next_occurrence,
+            commands::recurring::execute_recurring_transaction,
+            commands::recurring::get_upcoming_executions,
+            commands::recurring::process_recurring_transactions,
             // Budget commands
             commands::budgets::create_budget,
             commands::budgets::get_budgets,
@@ -92,6 +96,12 @@ pub fn run() {
             commands::installments::cancel_installment_plan,
             commands::installments::delete_installment_plan,
             commands::installments::get_upcoming_installments,
+            // Template commands
+            commands::templates::get_templates,
+            commands::templates::create_template,
+            commands::templates::update_template,
+            commands::templates::delete_template,
+            commands::templates::use_template,
             // Export commands
             commands::export::export_transactions_csv,
             commands::export::export_transactions_json,

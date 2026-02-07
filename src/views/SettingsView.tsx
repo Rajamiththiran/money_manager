@@ -410,10 +410,21 @@ export default function SettingsView() {
       // NOTE: Full restore requires a backend command that drops and re-creates data.
       // For now, we validate and show success. A proper `restore_from_backup` command
       // should be added in a future backend update.
-      warning(
-        "Restore Not Yet Implemented",
-        "Backup validation passed. The restore_from_backup backend command is needed to complete this feature.",
-      );
+      const result = await invoke<{
+        success: boolean;
+        accounts_restored: number;
+        categories_restored: number;
+        transactions_restored: number;
+        budgets_restored: number;
+      }>("restore_from_backup", { backupJson: content });
+
+      if (result.success) {
+        success(
+          "Restore Complete",
+          `Restored ${result.accounts_restored} accounts, ${result.categories_restored} categories, ${result.transactions_restored} transactions, and ${result.budgets_restored} budgets.`,
+        );
+      }
+      await loadDbStats();
 
       await loadDbStats();
     } catch (err) {
@@ -453,10 +464,21 @@ export default function SettingsView() {
     try {
       // NOTE: This requires a backend command `clear_all_data` to be implemented.
       // For now, show a warning that this feature needs backend support.
-      warning(
-        "Not Yet Implemented",
-        "A clear_all_data backend command is needed. Please implement it before using this feature.",
-      );
+      const result = await invoke<{
+        success: boolean;
+        accounts_deleted: number;
+        categories_deleted: number;
+        transactions_deleted: number;
+        budgets_deleted: number;
+      }>("clear_all_data");
+
+      if (result.success) {
+        success(
+          "Data Cleared",
+          `Deleted ${result.accounts_deleted} accounts, ${result.categories_deleted} categories, ${result.transactions_deleted} transactions, and ${result.budgets_deleted} budgets.`,
+        );
+      }
+      await loadDbStats();
     } catch (err) {
       showError("Failed to Clear Data", String(err));
     } finally {

@@ -128,6 +128,17 @@ pub fn run() {
             commands::analytics::get_subcategory_breakdown,
             commands::analytics::get_year_over_year_comparison,
             commands::analytics::get_analytics_dashboard,
+            // Currency commands (Phase 9)
+            commands::currencies::get_supported_currencies,
+            commands::currencies::get_primary_currency,
+            commands::currencies::set_primary_currency,
+            commands::currencies::set_exchange_rate,
+            commands::currencies::get_exchange_rate,
+            commands::currencies::get_exchange_rates,
+            commands::currencies::delete_exchange_rate,
+            commands::currencies::convert_amount,
+            commands::currencies::get_exchange_rate_summaries,
+            commands::currencies::convert_balances_to_primary,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

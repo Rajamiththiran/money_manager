@@ -142,6 +142,14 @@ pub fn run() {
             // Settings commands
             commands::settings::restore_from_backup,
             commands::settings::clear_all_data,
+            // Security commands
+            commands::security::set_pin,
+            commands::security::verify_pin,
+            commands::security::remove_pin,
+            commands::security::is_pin_enabled,
+            commands::security::get_lock_timeout,
+            commands::security::set_lock_timeout,
+            commands::security::get_security_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

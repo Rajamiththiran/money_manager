@@ -8,6 +8,7 @@ pub mod currencies;
 pub mod export;
 pub mod installments;
 pub mod recurring;
+pub mod security;
 pub mod settings;
 pub mod templates;
 pub mod transactions;

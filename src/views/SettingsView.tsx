@@ -22,6 +22,9 @@ import {
   Shield,
   ChevronRight,
   RefreshCw,
+  Lock,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { useTheme } from "../contexts/ThemeContext";
 import { useAccentColor } from "../contexts/AccentColorContext";
@@ -29,7 +32,7 @@ import { useToast } from "../components/Toast";
 import Button from "../components/Button";
 import Select from "../components/Select";
 
-// ─── Settings Types ───────────────────────────────────────────────
+// ——— Settings Types ———————————————————————————————
 interface AppSettings {
   currency: string;
   currencySymbol: string;
@@ -119,7 +122,7 @@ function getOrdinalSuffix(n: number): string {
   return s[(v - 20) % 10] || s[v] || s[0];
 }
 
-// ─── Section Wrapper ──────────────────────────────────────────────
+// ——— Section Wrapper ————————————————————————————————
 function SettingSection({
   icon,
   title,
@@ -155,7 +158,7 @@ function SettingSection({
   );
 }
 
-// ─── Setting Row ──────────────────────────────────────────────────
+// ——— Setting Row ——————————————————————————————————————
 function SettingRow({
   label,
   description,
@@ -182,7 +185,7 @@ function SettingRow({
   );
 }
 
-// ─── Database Stats ───────────────────────────────────────────────
+// ——— Database Stats ———————————————————————————————————
 interface DbStats {
   accounts: number;
   categories: number;
@@ -190,7 +193,7 @@ interface DbStats {
   budgets: number;
 }
 
-// ─── Main Component ───────────────────────────────────────────────
+// ——— Main Component ———————————————————————————————————
 export default function SettingsView() {
   const { theme, toggleTheme } = useTheme();
   const { accentColor: activeAccent, setAccentColor } = useAccentColor();
@@ -217,11 +220,43 @@ export default function SettingsView() {
     return localStorage.getItem("lastBackupDate");
   });
 
+  // Security state
+  const [pinEnabled, setPinEnabled] = useState(false);
+  const [showSetPin, setShowSetPin] = useState(false);
+  const [showChangePin, setShowChangePin] = useState(false);
+  const [showRemovePin, setShowRemovePin] = useState(false);
+  const [currentPinInput, setCurrentPinInput] = useState("");
+  const [newPinInput, setNewPinInput] = useState("");
+  const [confirmPinInput, setConfirmPinInput] = useState("");
+  const [pinError, setPinError] = useState<string | null>(null);
+  const [pinSuccess, setPinSuccess] = useState<string | null>(null);
+  const [showPin, setShowPin] = useState(false);
+  const [securityTimeout, setSecurityTimeout] = useState(5);
+
   useEffect(() => {
     loadDbStats();
   }, []);
 
-  // ── Persist settings on change ──────────────────────────────────
+  // Load security status on mount
+  useEffect(() => {
+    const loadSecurityStatus = async () => {
+      try {
+        const status = await invoke<{
+          pin_enabled: boolean;
+          lock_timeout_minutes: number;
+          failed_attempts: number;
+          is_locked_out: boolean;
+        }>("get_security_status");
+        setPinEnabled(status.pin_enabled);
+        setSecurityTimeout(status.lock_timeout_minutes);
+      } catch (err) {
+        console.error("Failed to load security status:", err);
+      }
+    };
+    loadSecurityStatus();
+  }, []);
+
+  // —— Persist settings on change ——————————————————————
   const updateSetting = <K extends keyof AppSettings>(
     key: K,
     value: AppSettings[K],
@@ -252,7 +287,7 @@ export default function SettingsView() {
     info("Settings Reset", "All preferences restored to defaults.");
   };
 
-  // ── Database stats ──────────────────────────────────────────────
+  // —— Database stats ————————————————————————————————
   const loadDbStats = async () => {
     try {
       const [accounts, categories, transactions, budgets] = await Promise.all([
@@ -272,7 +307,7 @@ export default function SettingsView() {
     }
   };
 
-  // ── Backup ──────────────────────────────────────────────────────
+  // —— Backup ——————————————————————————————————————————
   const handleBackup = async () => {
     setIsBackingUp(true);
     try {
@@ -308,7 +343,7 @@ export default function SettingsView() {
     }
   };
 
-  // ── Restore ─────────────────────────────────────────────────────
+  // —— Restore ————————————————————————————————————————
   const handleRestore = async () => {
     const confirmed = await ask(
       "Restoring from a backup will replace ALL current data. This action cannot be undone.\n\nAre you sure you want to continue?",
@@ -407,9 +442,6 @@ export default function SettingsView() {
         return;
       }
 
-      // NOTE: Full restore requires a backend command that drops and re-creates data.
-      // For now, we validate and show success. A proper `restore_from_backup` command
-      // should be added in a future backend update.
       const result = await invoke<{
         success: boolean;
         accounts_restored: number;
@@ -424,7 +456,6 @@ export default function SettingsView() {
           `Restored ${result.accounts_restored} accounts, ${result.categories_restored} categories, ${result.transactions_restored} transactions, and ${result.budgets_restored} budgets.`,
         );
       }
-      await loadDbStats();
 
       await loadDbStats();
     } catch (err) {
@@ -434,7 +465,7 @@ export default function SettingsView() {
     }
   };
 
-  // ── Clear All Data ──────────────────────────────────────────────
+  // —— Clear All Data ————————————————————————————————
   const handleClearData = async () => {
     const firstConfirm = await ask(
       "This will permanently delete ALL your financial data including accounts, transactions, categories, and budgets.\n\nThis action CANNOT be undone.",
@@ -462,8 +493,6 @@ export default function SettingsView() {
 
     setIsClearing(true);
     try {
-      // NOTE: This requires a backend command `clear_all_data` to be implemented.
-      // For now, show a warning that this feature needs backend support.
       const result = await invoke<{
         success: boolean;
         accounts_deleted: number;
@@ -478,6 +507,7 @@ export default function SettingsView() {
           `Deleted ${result.accounts_deleted} accounts, ${result.categories_deleted} categories, ${result.transactions_deleted} transactions, and ${result.budgets_deleted} budgets.`,
         );
       }
+
       await loadDbStats();
     } catch (err) {
       showError("Failed to Clear Data", String(err));
@@ -486,7 +516,83 @@ export default function SettingsView() {
     }
   };
 
-  // ── Format helpers ──────────────────────────────────────────────
+  // —— Security handlers ————————————————————————————
+  const resetPinForms = () => {
+    setShowSetPin(false);
+    setShowChangePin(false);
+    setShowRemovePin(false);
+    setCurrentPinInput("");
+    setNewPinInput("");
+    setConfirmPinInput("");
+    setPinError(null);
+    setPinSuccess(null);
+    setShowPin(false);
+  };
+
+  const handleSetPin = async () => {
+    setPinError(null);
+    setPinSuccess(null);
+    if (newPinInput.length < 4 || newPinInput.length > 8) {
+      setPinError("PIN must be 4-8 digits");
+      return;
+    }
+    if (!/^\d+$/.test(newPinInput)) {
+      setPinError("PIN must contain only numbers");
+      return;
+    }
+    if (newPinInput !== confirmPinInput) {
+      setPinError("PINs do not match");
+      return;
+    }
+    try {
+      await invoke("set_pin", {
+        newPin: newPinInput,
+        currentPin: pinEnabled ? currentPinInput : null,
+      });
+      setPinEnabled(true);
+      setShowSetPin(false);
+      setShowChangePin(false);
+      setNewPinInput("");
+      setConfirmPinInput("");
+      setCurrentPinInput("");
+      setPinSuccess("PIN has been set successfully");
+      success("PIN Enabled", "Your app is now protected with a PIN lock.");
+    } catch (err) {
+      setPinError(String(err));
+    }
+  };
+
+  const handleRemovePin = async () => {
+    setPinError(null);
+    if (!currentPinInput) {
+      setPinError("Enter your current PIN to remove it");
+      return;
+    }
+    try {
+      await invoke("remove_pin", { currentPin: currentPinInput });
+      setPinEnabled(false);
+      setShowRemovePin(false);
+      setCurrentPinInput("");
+      window.dispatchEvent(new Event("pin-removed"));
+      success("PIN Removed", "App lock has been disabled.");
+    } catch (err) {
+      setPinError(String(err));
+    }
+  };
+
+  const handleTimeoutChange = async (minutes: number) => {
+    try {
+      await invoke("set_lock_timeout", { minutes });
+      setSecurityTimeout(minutes);
+      window.dispatchEvent(
+        new CustomEvent("lock-timeout-changed", { detail: minutes }),
+      );
+    } catch (err) {
+      showError("Failed to update timeout", String(err));
+    }
+  };
+
+  // —— Format helpers ————————————————————————————————
   const formatLastBackup = () => {
     if (!lastBackupDate) return "Never";
     try {
@@ -794,6 +900,283 @@ export default function SettingsView() {
             </div>
           </button>
         </div>
+      </SettingSection>
+
+      {/* ═══ Security ═══ */}
+      <SettingSection
+        icon={<Lock className="w-5 h-5 text-gray-600 dark:text-gray-300" />}
+        title="Security"
+        description="Protect your financial data with a PIN lock"
+      >
+        {/* PIN Status */}
+        <div className="flex items-center justify-between p-4 rounded-lg bg-gray-50 dark:bg-gray-700/30 border border-gray-100 dark:border-gray-700">
+          <div className="flex items-center gap-3">
+            <div
+              className={`p-2 rounded-lg ${pinEnabled ? "bg-emerald-100 dark:bg-emerald-900/30" : "bg-gray-100 dark:bg-gray-700"}`}
+            >
+              <Shield
+                className={`w-5 h-5 ${pinEnabled ? "text-emerald-600 dark:text-emerald-400" : "text-gray-400"}`}
+              />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-gray-900 dark:text-white">
+                PIN Lock
+              </p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                {pinEnabled
+                  ? "Enabled — App requires PIN to unlock"
+                  : "Disabled — Anyone can open the app"}
+              </p>
+            </div>
+          </div>
+          <div
+            className={`px-3 py-1 rounded-full text-xs font-medium ${
+              pinEnabled
+                ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300"
+                : "bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400"
+            }`}
+          >
+            {pinEnabled ? "ON" : "OFF"}
+          </div>
+        </div>
+
+        {/* PIN Success Message */}
+        {pinSuccess && (
+          <div className="p-3 rounded-lg bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800/30">
+            <p className="text-sm text-emerald-700 dark:text-emerald-300">
+              {pinSuccess}
+            </p>
+          </div>
+        )}
+
+        {/* PIN Actions */}
+        {!showSetPin && !showChangePin && !showRemovePin && (
+          <div className="flex gap-3">
+            {!pinEnabled ? (
+              <Button
+                onClick={() => {
+                  resetPinForms();
+                  setShowSetPin(true);
+                }}
+                icon={<Lock className="w-4 h-4" />}
+              >
+                Set PIN
+              </Button>
+            ) : (
+              <>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    resetPinForms();
+                    setShowChangePin(true);
+                  }}
+                  size="sm"
+                >
+                  Change PIN
+                </Button>
+                <Button
+                  variant="danger"
+                  onClick={() => {
+                    resetPinForms();
+                    setShowRemovePin(true);
+                  }}
+                  size="sm"
+                >
+                  Remove PIN
+                </Button>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Set PIN Form */}
+        {showSetPin && (
+          <div className="p-4 rounded-lg border border-gray-200 dark:border-gray-600 space-y-4">
+            <h4 className="text-sm font-medium text-gray-900 dark:text-white">
+              Set a new PIN
+            </h4>
+            <div className="space-y-3">
+              <div className="relative">
+                <input
+                  type={showPin ? "text" : "password"}
+                  value={newPinInput}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/\D/g, "").slice(0, 8);
+                    setNewPinInput(val);
+                    setPinError(null);
+                  }}
+                  placeholder="Enter 4-8 digit PIN"
+                  className="w-full px-3 py-2 pr-10 border rounded-lg bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 tracking-widest text-center text-lg"
+                  inputMode="numeric"
+                  maxLength={8}
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPin(!showPin)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                >
+                  {showPin ? (
+                    <EyeOff className="w-4 h-4" />
+                  ) : (
+                    <Eye className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+              <input
+                type={showPin ? "text" : "password"}
+                value={confirmPinInput}
+                onChange={(e) => {
+                  const val = e.target.value.replace(/\D/g, "").slice(0, 8);
+                  setConfirmPinInput(val);
+                  setPinError(null);
+                }}
+                placeholder="Confirm PIN"
+                className="w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 tracking-widest text-center text-lg"
+                inputMode="numeric"
+                maxLength={8}
+              />
+            </div>
+            {pinError && <p className="text-sm text-red-500">{pinError}</p>}
+            <div className="flex gap-2">
+              <Button onClick={handleSetPin} size="sm">
+                Save PIN
+              </Button>
+              <Button variant="ghost" onClick={resetPinForms} size="sm">
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Change PIN Form */}
+        {showChangePin && (
+          <div className="p-4 rounded-lg border border-gray-200 dark:border-gray-600 space-y-4">
+            <h4 className="text-sm font-medium text-gray-900 dark:text-white">
+              Change your PIN
+            </h4>
+            <div className="space-y-3">
+              <input
+                type={showPin ? "text" : "password"}
+                value={currentPinInput}
+                onChange={(e) => {
+                  const val = e.target.value.replace(/\D/g, "").slice(0, 8);
+                  setCurrentPinInput(val);
+                  setPinError(null);
+                }}
+                placeholder="Current PIN"
+                className="w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 tracking-widest text-center text-lg"
+                inputMode="numeric"
+                maxLength={8}
+                autoFocus
+              />
+              <div className="relative">
+                <input
+                  type={showPin ? "text" : "password"}
+                  value={newPinInput}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/\D/g, "").slice(0, 8);
+                    setNewPinInput(val);
+                    setPinError(null);
+                  }}
+                  placeholder="New PIN (4-8 digits)"
+                  className="w-full px-3 py-2 pr-10 border rounded-lg bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 tracking-widest text-center text-lg"
+                  inputMode="numeric"
+                  maxLength={8}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPin(!showPin)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                >
+                  {showPin ? (
+                    <EyeOff className="w-4 h-4" />
+                  ) : (
+                    <Eye className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+              <input
+                type={showPin ? "text" : "password"}
+                value={confirmPinInput}
+                onChange={(e) => {
+                  const val = e.target.value.replace(/\D/g, "").slice(0, 8);
+                  setConfirmPinInput(val);
+                  setPinError(null);
+                }}
+                placeholder="Confirm new PIN"
+                className="w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 tracking-widest text-center text-lg"
+                inputMode="numeric"
+                maxLength={8}
+              />
+            </div>
+            {pinError && <p className="text-sm text-red-500">{pinError}</p>}
+            <div className="flex gap-2">
+              <Button onClick={handleSetPin} size="sm">
+                Update PIN
+              </Button>
+              <Button variant="ghost" onClick={resetPinForms} size="sm">
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Remove PIN Form */}
+        {showRemovePin && (
+          <div className="p-4 rounded-lg border border-red-200 dark:border-red-800/50 space-y-4">
+            <h4 className="text-sm font-medium text-red-700 dark:text-red-300">
+              Remove PIN lock
+            </h4>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Enter your current PIN to confirm removal. Your app will no longer
+              require a PIN to open.
+            </p>
+            <input
+              type={showPin ? "text" : "password"}
+              value={currentPinInput}
+              onChange={(e) => {
+                const val = e.target.value.replace(/\D/g, "").slice(0, 8);
+                setCurrentPinInput(val);
+                setPinError(null);
+              }}
+              placeholder="Enter current PIN"
+              className="w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500 tracking-widest text-center text-lg"
+              inputMode="numeric"
+              maxLength={8}
+              autoFocus
+            />
+            {pinError && <p className="text-sm text-red-500">{pinError}</p>}
+            <div className="flex gap-2">
+              <Button variant="danger" onClick={handleRemovePin} size="sm">
+                Remove PIN
+              </Button>
+              <Button variant="ghost" onClick={resetPinForms} size="sm">
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Auto-Lock Timeout */}
+        {pinEnabled && (
+          <SettingRow
+            label="Auto-Lock Timeout"
+            description="Lock app after this period of inactivity"
+          >
+            <Select
+              value={String(securityTimeout)}
+              onChange={(e) => handleTimeoutChange(Number(e.target.value))}
+              options={[
+                { value: "1", label: "1 minute" },
+                { value: "5", label: "5 minutes" },
+                { value: "15", label: "15 minutes" },
+                { value: "30", label: "30 minutes" },
+                { value: "0", label: "Never (manual only)" },
+              ]}
+            />
+          </SettingRow>
+        )}
       </SettingSection>
 
       {/* ═══ About ═══ */}

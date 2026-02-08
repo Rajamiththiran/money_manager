@@ -150,6 +150,11 @@ pub fn run() {
             commands::security::get_lock_timeout,
             commands::security::set_lock_timeout,
             commands::security::get_security_status,
+            // Photo commands
+            commands::photos::attach_photo,
+            commands::photos::remove_photo,
+            commands::photos::get_photo_path,
+            commands::photos::cleanup_orphaned_photos,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

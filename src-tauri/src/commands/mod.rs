@@ -7,6 +7,7 @@ pub mod credit_cards;
 pub mod currencies;
 pub mod export;
 pub mod installments;
+pub mod photos;
 pub mod recurring;
 pub mod security;
 pub mod settings;

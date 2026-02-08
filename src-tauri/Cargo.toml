@@ -1,11 +1,11 @@
 #File: src-tauri/Cargo.toml
 [package]
-name = "app"
+name = "money_manager"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
-license = ""
-repository = ""
+description = "A personal finance and money tracking desktop application"
+authors = ["Miththiran"]
+license = "MIT"
+repository = "https://github.com/Rajamiththiran/money_manager"
 edition = "2021"
 rust-version = "1.77.2"
 
@@ -30,3 +30,4 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1.0"
 dirs = "5.0"
 bcrypt = "0.16"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif"] }

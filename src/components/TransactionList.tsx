@@ -6,8 +6,10 @@ import {
   ArrowUpIcon,
   ArrowDownIcon,
   ArrowsRightLeftIcon,
+  CameraIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
+import PhotoAttachment from "./PhotoAttachment";
 import type { TransactionWithDetails } from "../types/transaction";
 
 interface TransactionListProps {
@@ -124,8 +126,17 @@ export default function TransactionList({
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
                   {txn.amount.toFixed(2)}
                 </td>
-                <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-400 max-w-xs truncate">
-                  {txn.memo || "-"}
+                <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-400 max-w-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate">{txn.memo || "-"}</span>
+                    {txn.photo_path && (
+                      <PhotoAttachment
+                        transactionId={txn.id}
+                        photoPath={txn.photo_path}
+                        compact
+                      />
+                    )}
+                  </div>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
                   <div className="flex items-center justify-end gap-2">
@@ -176,6 +187,12 @@ export default function TransactionList({
                 <span className="text-sm text-gray-600 dark:text-gray-400">
                   {new Date(txn.date).toLocaleDateString()}
                 </span>
+                {txn.photo_path && (
+                  <CameraIcon
+                    className="h-4 w-4 text-blue-400"
+                    title="Has receipt"
+                  />
+                )}
               </div>
               <span className="text-lg font-bold text-gray-900 dark:text-white">
                 {txn.amount.toFixed(2)}

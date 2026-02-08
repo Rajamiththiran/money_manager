@@ -1,8 +1,9 @@
 // File: src/components/TransactionModal.tsx
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { XMarkIcon } from "@heroicons/react/24/outline";
 import Button from "./Button";
 import Input from "./Input";
+import PhotoAttachment from "./PhotoAttachment";
 import type {
   TransactionWithDetails,
   UpdateTransactionInput,
@@ -73,7 +74,7 @@ export default function TransactionModal({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl max-w-md w-full">
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl max-w-md w-full max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700">
           <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
             Edit Transaction
@@ -154,6 +155,12 @@ export default function TransactionModal({
               placeholder="Add a note..."
             />
           </div>
+
+          {/* Receipt Photo */}
+          <PhotoAttachment
+            transactionId={transaction.id}
+            photoPath={transaction.photo_path}
+          />
 
           <div className="flex gap-3 pt-4">
             <Button

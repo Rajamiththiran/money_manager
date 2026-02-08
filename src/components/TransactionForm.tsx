@@ -21,7 +21,7 @@ interface TransactionFormProps {
     to_account_id?: number;
     amount?: number;
     memo?: string;
-  };
+  } | null;
 }
 
 type TransactionType = "INCOME" | "EXPENSE" | "TRANSFER";
@@ -33,29 +33,27 @@ export default function TransactionForm({
   onCancel,
   prefillData,
 }: TransactionFormProps) {
-  const [type, setType] = useState<TransactionType>(
-    prefillData?.transaction_type || "EXPENSE",
-  );
+  const [type, setType] = useState<TransactionType>("EXPENSE");
   const [formData, setFormData] = useState({
     date: new Date().toISOString().split("T")[0],
-    amount: prefillData?.amount?.toString() || "",
-    account_id:
-      prefillData?.account_id ||
-      prefillData?.from_account_id ||
-      accounts[0]?.id ||
-      0,
-    to_account_id: prefillData?.to_account_id || accounts[1]?.id || 0,
-    category_id: prefillData?.category_id || 0,
-    memo: prefillData?.memo || "",
+    amount: "",
+    account_id: accounts[0]?.id || 0,
+    to_account_id: accounts[1]?.id || 0,
+    category_id: 0,
+    memo: "",
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showCalculator, setShowCalculator] = useState(false);
 
+  // React to prefillData changes (template usage or initial load)
   useEffect(() => {
-    // Update form when prefillData changes
     if (prefillData) {
-      if (prefillData.transaction_type) setType(prefillData.transaction_type);
+      // Set the transaction type from template
+      if (prefillData.transaction_type) {
+        setType(prefillData.transaction_type);
+      }
+      // Set form fields from template
       setFormData({
         date: new Date().toISOString().split("T")[0],
         amount: prefillData.amount?.toString() || "",
@@ -67,6 +65,17 @@ export default function TransactionForm({
         to_account_id: prefillData.to_account_id || accounts[1]?.id || 0,
         category_id: prefillData.category_id || 0,
         memo: prefillData.memo || "",
+      });
+    } else {
+      // No prefill — default to EXPENSE for manual "New Transaction"
+      setType("EXPENSE");
+      setFormData({
+        date: new Date().toISOString().split("T")[0],
+        amount: "",
+        account_id: accounts[0]?.id || 0,
+        to_account_id: accounts[1]?.id || 0,
+        category_id: 0,
+        memo: "",
       });
     }
   }, [prefillData, accounts]);

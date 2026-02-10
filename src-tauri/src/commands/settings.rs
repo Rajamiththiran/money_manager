@@ -84,11 +84,9 @@ pub async fn restore_from_backup(
 
     for table in &tables_to_clear {
         let query = format!("DELETE FROM {}", table);
-        // Use IF EXISTS pattern — some tables might not exist yet
         match sqlx::query(&query).execute(&mut *tx).await {
             Ok(_) => {}
             Err(e) => {
-                // Table might not exist (e.g., older DB without credit cards)
                 println!("Warning: Could not clear table {}: {}", table, e);
             }
         }
@@ -96,7 +94,10 @@ pub async fn restore_from_backup(
 
     // 5. Reset SQLite autoincrement counters
     for table in &tables_to_clear {
-        let query = format!("DELETE FROM sqlite_sequence WHERE name = '{}'", table);
+        let query = format!(
+            "DELETE FROM sqlite_sequence WHERE name = '{}'",
+            table
+        );
         let _ = sqlx::query(&query).execute(&mut *tx).await;
     }
 
@@ -106,9 +107,15 @@ pub async fn restore_from_backup(
         .await
         .map_err(|e| format!("Failed to re-enable foreign keys: {}", e))?;
 
-    // 7. Restore accounts
-    let mut accounts_restored = 0;
+    // ============================================================
+    // 7. Restore accounts & build old_id → new_id map
+    // ============================================================
+    let mut account_id_map: std::collections::HashMap<i64, i64> =
+        std::collections::HashMap::new();
+    let mut accounts_restored: i64 = 0;
+
     for account in accounts {
+        let old_id = account.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
         let group_id = account
             .get("group_id")
             .and_then(|v| v.as_i64())
@@ -130,7 +137,7 @@ pub async fn restore_from_backup(
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO accounts (group_id, name, initial_balance, currency, created_at) VALUES (?, ?, ?, ?, ?)"
         )
         .bind(group_id)
@@ -142,19 +149,27 @@ pub async fn restore_from_backup(
         .await
         .map_err(|e| format!("Failed to restore account '{}': {}", name, e))?;
 
+        let new_id = result.last_insert_rowid();
+        account_id_map.insert(old_id, new_id);
         accounts_restored += 1;
     }
 
-    // 8. Restore categories (parent categories first, then children)
-    let mut categories_restored = 0;
+    // ============================================================
+    // 8. Restore categories & build old_id → new_id map
+    //    Two passes: parents first, then children
+    // ============================================================
+    let mut category_id_map: std::collections::HashMap<i64, i64> =
+        std::collections::HashMap::new();
+    let mut categories_restored: i64 = 0;
 
-    // First pass: categories without parent_id
+    // First pass: parent categories (no parent_id)
     for category in categories {
         let parent_id = category.get("parent_id").and_then(|v| v.as_i64());
         if parent_id.is_some() {
             continue; // Skip children in first pass
         }
 
+        let old_id = category.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
         let name = category
             .get("name")
             .and_then(|v| v.as_str())
@@ -164,103 +179,74 @@ pub async fn restore_from_backup(
             .and_then(|v| v.as_str())
             .ok_or_else(|| "Category missing type".to_string())?;
 
-        sqlx::query("INSERT INTO categories (name, type) VALUES (?, ?)")
-            .bind(name)
-            .bind(cat_type)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| format!("Failed to restore category '{}': {}", name, e))?;
-
-        categories_restored += 1;
-    }
-
-    // Second pass: categories with parent_id
-    // We need to map old IDs to new IDs
-    // Since we insert in order, we build a mapping
-    let mut category_id_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
-
-    // Re-fetch inserted parent categories to build the map by name+type
-    let parent_rows = sqlx::query("SELECT id, name, type FROM categories WHERE parent_id IS NULL")
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|e| format!("Failed to fetch restored categories: {}", e))?;
-
-    for category in categories {
-        let parent_id = category.get("parent_id").and_then(|v| v.as_i64());
-        if parent_id.is_some() {
-            continue;
-        }
-        let old_id = category.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let name = category.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        let cat_type = category.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-        // Find matching row in DB
-        for row in &parent_rows {
-            let db_name: String = row.get("name");
-            let db_type: String = row.get("type");
-            if db_name == name && db_type == cat_type {
-                let new_id: i64 = row.get("id");
-                category_id_map.insert(old_id, new_id);
-                break;
-            }
-        }
-    }
-
-    // Now insert child categories
-    for category in categories {
-        let parent_id = match category.get("parent_id").and_then(|v| v.as_i64()) {
-            Some(pid) => pid,
-            None => continue, // Skip parents (already inserted)
-        };
-
-        let name = category
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "Category missing name".to_string())?;
-        let cat_type = category
-            .get("type")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "Category missing type".to_string())?;
-        let old_id = category.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-
-        // Map old parent_id to new parent_id
-        let new_parent_id = category_id_map
-            .get(&parent_id)
-            .copied()
-            .unwrap_or(parent_id);
-
-        let result = sqlx::query("INSERT INTO categories (parent_id, name, type) VALUES (?, ?, ?)")
-            .bind(new_parent_id)
-            .bind(name)
-            .bind(cat_type)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| format!("Failed to restore child category '{}': {}", name, e))?;
+        let result =
+            sqlx::query("INSERT INTO categories (name, type) VALUES (?, ?)")
+                .bind(name)
+                .bind(cat_type)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Failed to restore category '{}': {}", name, e))?;
 
         category_id_map.insert(old_id, result.last_insert_rowid());
         categories_restored += 1;
     }
 
-    // 9. Build account ID map (old → new)
-    let mut account_id_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
-    let account_rows = sqlx::query("SELECT id, name FROM accounts ORDER BY id")
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|e| format!("Failed to fetch restored accounts: {}", e))?;
+    // Second pass: child categories (have parent_id)
+    for category in categories {
+        let old_parent_id = match category.get("parent_id").and_then(|v| v.as_i64()) {
+            Some(pid) => pid,
+            None => continue, // Skip parents (already inserted)
+        };
 
-    for (i, account) in accounts.iter().enumerate() {
-        let old_id = account.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        if i < account_rows.len() {
-            let new_id: i64 = account_rows[i].get("id");
-            account_id_map.insert(old_id, new_id);
-        }
+        let old_id = category.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let name = category
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Category missing name".to_string())?;
+        let cat_type = category
+            .get("type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Category missing type".to_string())?;
+
+        // Map old parent_id to new parent_id
+        let new_parent_id = category_id_map
+            .get(&old_parent_id)
+            .copied()
+            .unwrap_or(old_parent_id);
+
+        let result = sqlx::query(
+            "INSERT INTO categories (parent_id, name, type) VALUES (?, ?, ?)",
+        )
+        .bind(new_parent_id)
+        .bind(name)
+        .bind(cat_type)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to restore child category '{}': {}", name, e))?;
+
+        category_id_map.insert(old_id, result.last_insert_rowid());
+        categories_restored += 1;
     }
 
-    // 10. Restore transactions and journal entries
-    let mut transactions_restored = 0;
+    // ============================================================
+    // 9. Restore transactions and journal entries
+    //
+    //    The export format uses TransactionWithDetails with
+    //    #[serde(flatten)], so transaction fields are at top level.
+    //    We also check for a nested "transaction" key for safety.
+    //
+    //    Journal entries match create_transaction exactly:
+    //      INCOME  → 1 entry: debit account (increase asset)
+    //      EXPENSE → 1 entry: credit account (decrease asset)
+    //      TRANSFER→ 2 entries: credit source, debit destination
+    //
+    //    CRITICAL: journal_entries.account_id references accounts(id).
+    //    Only account IDs go here — NEVER category IDs.
+    // ============================================================
+    let mut transactions_restored: i64 = 0;
+
     for txn in transactions {
-        // The export format nests transaction fields inside a "transaction" key
-        // or at the top level (TransactionWithDetails)
+        // Handle both flat and nested export format
         let txn_data = txn.get("transaction").unwrap_or(txn);
 
         let date = txn_data
@@ -288,17 +274,37 @@ pub async fn restore_from_backup(
         let new_account_id = account_id_map
             .get(&old_account_id)
             .copied()
-            .unwrap_or(old_account_id);
-        let new_to_account_id =
-            old_to_account_id.map(|id| account_id_map.get(&id).copied().unwrap_or(id));
-        let new_category_id =
-            old_category_id.map(|id| category_id_map.get(&id).copied().unwrap_or(id));
+            .ok_or_else(|| {
+                format!(
+                    "Account ID {} not found in backup (transaction date: {})",
+                    old_account_id, date
+                )
+            })?;
 
+        let new_to_account_id = match old_to_account_id {
+            Some(id) => Some(
+                account_id_map
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(id),
+            ),
+            None => None,
+        };
+
+        let new_category_id = match old_category_id {
+            Some(id) => Some(
+                category_id_map
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(id),
+            ),
+            None => None,
+        };
+
+        // Insert the transaction
         let result = sqlx::query(
-            r#"
-            INSERT INTO transactions (date, type, amount, account_id, to_account_id, category_id, memo, photo_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            "#,
+            r#"INSERT INTO transactions (date, type, amount, account_id, to_account_id, category_id, memo, photo_path)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
         .bind(date)
         .bind(txn_type)
@@ -310,85 +316,59 @@ pub async fn restore_from_backup(
         .bind(photo_path)
         .execute(&mut *tx)
         .await
-        .map_err(|e| format!("Failed to restore transaction: {}", e))?;
+        .map_err(|e| format!("Failed to restore transaction (date: {}): {}", date, e))?;
 
         let new_txn_id = result.last_insert_rowid();
 
-        // Recreate journal entries based on transaction type
+        // Create journal entries — ONLY using account IDs
         match txn_type {
             "INCOME" => {
                 // Debit the account (increase asset)
                 sqlx::query(
-                    "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?, ?, ?, 0)"
+                    "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?, ?, ?, 0)",
                 )
                 .bind(new_txn_id)
                 .bind(new_account_id)
                 .bind(amount)
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| format!("Failed to create journal entry: {}", e))?;
-
-                // Credit the income category
-                if let Some(cat_id) = new_category_id {
-                    sqlx::query(
-                        "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?, ?, 0, ?)"
-                    )
-                    .bind(new_txn_id)
-                    .bind(cat_id)
-                    .bind(amount)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| format!("Failed to create journal entry: {}", e))?;
-                }
+                .map_err(|e| format!("Failed to create journal entry for INCOME txn {}: {}", new_txn_id, e))?;
             }
             "EXPENSE" => {
                 // Credit the account (decrease asset)
                 sqlx::query(
-                    "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?, ?, 0, ?)"
+                    "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?, ?, 0, ?)",
                 )
                 .bind(new_txn_id)
                 .bind(new_account_id)
                 .bind(amount)
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| format!("Failed to create journal entry: {}", e))?;
-
-                // Debit the expense category
-                if let Some(cat_id) = new_category_id {
-                    sqlx::query(
-                        "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?, ?, ?, 0)"
-                    )
-                    .bind(new_txn_id)
-                    .bind(cat_id)
-                    .bind(amount)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| format!("Failed to create journal entry: {}", e))?;
-                }
+                .map_err(|e| format!("Failed to create journal entry for EXPENSE txn {}: {}", new_txn_id, e))?;
             }
             "TRANSFER" => {
                 if let Some(to_acc_id) = new_to_account_id {
                     // Credit source account (decrease)
                     sqlx::query(
-                        "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?, ?, 0, ?)"
+                        "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?, ?, 0, ?)",
                     )
                     .bind(new_txn_id)
                     .bind(new_account_id)
                     .bind(amount)
                     .execute(&mut *tx)
                     .await
-                    .map_err(|e| format!("Failed to create journal entry: {}", e))?;
+                    .map_err(|e| format!("Failed to create journal entry for TRANSFER source txn {}: {}", new_txn_id, e))?;
 
                     // Debit destination account (increase)
                     sqlx::query(
-                        "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?, ?, ?, 0)"
+                        "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?, ?, ?, 0)",
                     )
                     .bind(new_txn_id)
                     .bind(to_acc_id)
                     .bind(amount)
                     .execute(&mut *tx)
                     .await
-                    .map_err(|e| format!("Failed to create journal entry: {}", e))?;
+                    .map_err(|e| format!("Failed to create journal entry for TRANSFER dest txn {}: {}", new_txn_id, e))?;
                 }
             }
             _ => {
@@ -402,8 +382,10 @@ pub async fn restore_from_backup(
         transactions_restored += 1;
     }
 
-    // 11. Restore budgets
-    let mut budgets_restored = 0;
+    // ============================================================
+    // 10. Restore budgets
+    // ============================================================
+    let mut budgets_restored: i64 = 0;
     for budget in budgets {
         let old_category_id = budget
             .get("category_id")
@@ -441,7 +423,7 @@ pub async fn restore_from_backup(
         budgets_restored += 1;
     }
 
-    // 12. Commit the transaction
+    // 11. Commit the transaction
     tx.commit()
         .await
         .map_err(|e| format!("Failed to commit restore: {}", e))?;
@@ -506,7 +488,10 @@ pub async fn clear_all_data(pool: State<'_, SqlitePool>) -> Result<ClearResult, 
 
     // Reset autoincrement counters
     for table in &tables_to_clear {
-        let query = format!("DELETE FROM sqlite_sequence WHERE name = '{}'", table);
+        let query = format!(
+            "DELETE FROM sqlite_sequence WHERE name = '{}'",
+            table
+        );
         let _ = sqlx::query(&query).execute(&mut *tx).await;
     }
 

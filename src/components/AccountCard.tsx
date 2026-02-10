@@ -1,14 +1,16 @@
 // File: src/components/AccountCard.tsx
-import { TrashIcon } from "@heroicons/react/24/outline";
+import { PencilIcon, TrashIcon } from "@heroicons/react/24/outline";
 import clsx from "clsx";
 
 interface AccountCardProps {
   id: number;
   name: string;
   groupName: string;
+  groupId: number;
   currentBalance: number;
   initialBalance: number;
   currency: string;
+  onEdit: (id: number) => void;
   onDelete: (id: number) => void;
 }
 
@@ -19,6 +21,7 @@ export default function AccountCard({
   currentBalance,
   initialBalance,
   currency,
+  onEdit,
   onDelete,
 }: AccountCardProps) {
   const isPositive = currentBalance >= 0;
@@ -40,13 +43,22 @@ export default function AccountCard({
             Initial: {initialBalance.toFixed(2)} {currency}
           </p>
         </div>
-        <button
-          onClick={() => onDelete(id)}
-          className="p-2 text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
-          aria-label="Delete account"
-        >
-          <TrashIcon className="h-5 w-5" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => onEdit(id)}
+            className="p-2 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+            aria-label="Edit account"
+          >
+            <PencilIcon className="h-4 w-4" />
+          </button>
+          <button
+            onClick={() => onDelete(id)}
+            className="p-2 text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
+            aria-label="Delete account"
+          >
+            <TrashIcon className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       <div className="mt-4">

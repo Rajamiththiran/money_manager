@@ -1,7 +1,7 @@
 // File: src/views/AdvancedView.tsx
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Bookmark, Repeat, CreditCard, Plus, X } from "lucide-react";
+import { Plus, X } from "lucide-react";
 import TemplateLibrary from "../components/TemplateLibrary";
 import RecurringTransactionList from "../components/RecurringTransactionList";
 import InstallmentPlanList from "../components/InstallmentPlanList";
@@ -9,26 +9,13 @@ import Button from "../components/Button";
 import Input from "../components/Input";
 import Select from "../components/Select";
 import { useToast } from "../components/Toast";
+import type { CreateRecurringTransactionInput } from "../types/recurring";
+import type { CreateInstallmentPlan } from "../types/installment";
 import type { Account } from "../types/account";
 import type { Category } from "../types/category";
-import type {
-  CreateRecurringTransactionInput,
-  RecurringFrequency,
-} from "../types/recurring";
-import type { CreateInstallmentPlan } from "../types/installment";
 import type { TransactionTemplateWithDetails } from "../types/template";
 
 type Tab = "templates" | "recurring" | "installments";
-
-const TAB_CONFIG: Array<{
-  key: Tab;
-  label: string;
-  icon: typeof Bookmark;
-}> = [
-  { key: "templates", label: "Templates", icon: Bookmark },
-  { key: "recurring", label: "Recurring", icon: Repeat },
-  { key: "installments", label: "Installments", icon: CreditCard },
-];
 
 const INITIAL_RECURRING: CreateRecurringTransactionInput = {
   name: "",
@@ -57,19 +44,23 @@ const INITIAL_INSTALLMENT: CreateInstallmentPlan = {
 
 export default function AdvancedView() {
   const { success, error: showError } = useToast();
+
   const [activeTab, setActiveTab] = useState<Tab>("templates");
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
 
+  // Recurring state
   const [showRecurringForm, setShowRecurringForm] = useState(false);
-  const [recurringForm, setRecurringForm] = useState({ ...INITIAL_RECURRING });
+  const [recurringForm, setRecurringForm] =
+    useState<CreateRecurringTransactionInput>({ ...INITIAL_RECURRING });
   const [recurringRefreshKey, setRecurringRefreshKey] = useState(0);
   const [recurringSubmitting, setRecurringSubmitting] = useState(false);
 
+  // Installment state
   const [showInstallmentForm, setShowInstallmentForm] = useState(false);
-  const [installmentForm, setInstallmentForm] = useState({
-    ...INITIAL_INSTALLMENT,
-  });
+  const [installmentForm, setInstallmentForm] = useState<CreateInstallmentPlan>(
+    { ...INITIAL_INSTALLMENT },
+  );
   const [installmentRefreshKey, setInstallmentRefreshKey] = useState(0);
   const [installmentSubmitting, setInstallmentSubmitting] = useState(false);
 
@@ -94,6 +85,8 @@ export default function AdvancedView() {
     sessionStorage.setItem("templateData", JSON.stringify(template));
     window.dispatchEvent(new CustomEvent("navigate-to-transactions"));
   };
+
+  // ======================== Recurring ========================
 
   const handleCreateRecurring = async () => {
     if (!recurringForm.name.trim()) {
@@ -133,6 +126,8 @@ export default function AdvancedView() {
     }
   };
 
+  // ======================== Installment ========================
+
   const handleCreateInstallment = async () => {
     if (!installmentForm.name.trim()) {
       showError("Validation Error", "Plan name is required.");
@@ -161,34 +156,21 @@ export default function AdvancedView() {
     setInstallmentSubmitting(true);
     try {
       await invoke("create_installment_plan", { plan: installmentForm });
-      const monthly = (
-        installmentForm.total_amount / installmentForm.num_installments
-      ).toFixed(2);
       success(
-        "Plan Created",
-        `"${installmentForm.name}" — LKR ${monthly}/month × ${installmentForm.num_installments}.`,
+        "Installment Created",
+        `"${installmentForm.name}" — ${installmentForm.num_installments} payments of LKR ${(installmentForm.total_amount / installmentForm.num_installments).toFixed(2)}`,
       );
       setShowInstallmentForm(false);
       setInstallmentForm({ ...INITIAL_INSTALLMENT });
       setInstallmentRefreshKey((p) => p + 1);
     } catch (err) {
-      showError("Failed to create plan", String(err));
+      showError("Failed to create", String(err));
     } finally {
       setInstallmentSubmitting(false);
     }
   };
 
-  const accountOptions = [
-    { value: "0", label: "Select Account" },
-    ...accounts.map((a) => ({ value: String(a.id), label: a.name })),
-  ];
-
-  const getCategoryOptions = (type: "INCOME" | "EXPENSE") => [
-    { value: "0", label: "Select Category" },
-    ...categories
-      .filter((c) => c.category_type === type)
-      .map((c) => ({ value: String(c.id), label: c.name })),
-  ];
+  // ======================== Options ========================
 
   const transactionTypeOptions = [
     { value: "INCOME", label: "Income" },
@@ -203,57 +185,60 @@ export default function AdvancedView() {
     { value: "YEARLY", label: "Yearly" },
   ];
 
-  const installmentFreqOptions = [
-    { value: "DAILY", label: "Daily" },
-    { value: "WEEKLY", label: "Weekly" },
-    { value: "MONTHLY", label: "Monthly" },
+  const accountOptions = [
+    { value: 0, label: "Select Account" },
+    ...accounts.map((acc) => ({ value: acc.id, label: acc.name })),
   ];
 
-  const updateR = (p: Partial<CreateRecurringTransactionInput>) =>
-    setRecurringForm((prev) => ({ ...prev, ...p }));
+  const getCategoryOptions = (type: string) => [
+    { value: 0, label: "Select Category" },
+    ...categories
+      .filter((cat) => cat.category_type === type)
+      .map((cat) => ({ value: cat.id, label: cat.name })),
+  ];
 
-  const updateI = (p: Partial<CreateInstallmentPlan>) =>
-    setInstallmentForm((prev) => ({ ...prev, ...p }));
+  const expenseCategoryOptions = getCategoryOptions("EXPENSE");
 
-  const monthlyPaymentPreview =
-    installmentForm.num_installments > 0
-      ? (
-          installmentForm.total_amount / installmentForm.num_installments
-        ).toFixed(2)
-      : "0.00";
+  // Helper for updating recurring form
+  const updateR = (patch: Partial<CreateRecurringTransactionInput>) =>
+    setRecurringForm((prev) => ({ ...prev, ...patch }));
+
+  // Helper for updating installment form
+  const updateI = (patch: Partial<CreateInstallmentPlan>) =>
+    setInstallmentForm((prev) => ({ ...prev, ...patch }));
 
   return (
-    <div className="p-6 lg:p-8 max-w-7xl">
-      {/* Page Header */}
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+    <div className="p-8">
+      <div className="mb-6">
+        <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
           Advanced Features
         </h1>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-          Templates, recurring transactions, and installment plans
+        <p className="text-gray-600 dark:text-gray-400">
+          Transaction templates, recurring transactions, and installment plans
         </p>
       </div>
 
       {/* Tab Navigation */}
-      <div className="flex gap-1 mb-6 bg-gray-100 dark:bg-gray-800 rounded-xl p-1">
-        {TAB_CONFIG.map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeTab === tab.key;
-          return (
-            <button
-              key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
-              className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${
-                isActive
-                  ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm"
-                  : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-              }`}
-            >
-              <Icon className="w-4 h-4" />
-              {tab.label}
-            </button>
-          );
-        })}
+      <div className="flex gap-2 mb-6 border-b border-gray-200 dark:border-gray-700">
+        {(
+          [
+            { id: "templates", label: "Templates" },
+            { id: "recurring", label: "Recurring" },
+            { id: "installments", label: "Installments" },
+          ] as const
+        ).map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`px-4 py-2 font-medium transition-colors ${
+              activeTab === tab.id
+                ? "text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400"
+                : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
       {/* ════════ TEMPLATES ════════ */}
@@ -274,7 +259,7 @@ export default function AdvancedView() {
                 Recurring Transactions
               </h2>
               <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                Automate your regular income, expenses, and transfers
+                Automate regular income and expenses
               </p>
             </div>
             <Button
@@ -297,100 +282,81 @@ export default function AdvancedView() {
           </div>
 
           {showRecurringForm && (
-            <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700 shadow-sm">
-              <h3 className="font-semibold text-gray-900 dark:text-white mb-5 flex items-center gap-2">
-                <Repeat className="w-5 h-5 text-blue-500" />
-                New Recurring Transaction
+            <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+              <h3 className="font-medium text-gray-900 dark:text-white mb-4">
+                Create Recurring Transaction
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <Input
                   label="Name"
                   value={recurringForm.name}
                   onChange={(e) => updateR({ name: e.target.value })}
-                  placeholder="e.g., Monthly Rent, Salary"
+                  placeholder="e.g., Monthly Rent"
                 />
                 <Select
-                  label="Transaction Type"
+                  label="Type"
                   value={recurringForm.transaction_type}
-                  onChange={(e) => {
-                    const type = e.target.value as
-                      | "INCOME"
-                      | "EXPENSE"
-                      | "TRANSFER";
+                  onChange={(e) =>
                     updateR({
-                      transaction_type: type,
-                      category_id: null,
-                      to_account_id: null,
-                    });
-                  }}
+                      transaction_type: e.target.value as
+                        | "INCOME"
+                        | "EXPENSE"
+                        | "TRANSFER",
+                    })
+                  }
                   options={transactionTypeOptions}
                 />
                 <Select
                   label="Frequency"
                   value={recurringForm.frequency}
                   onChange={(e) =>
-                    updateR({ frequency: e.target.value as RecurringFrequency })
+                    updateR({
+                      frequency: e.target.value as
+                        | "DAILY"
+                        | "WEEKLY"
+                        | "MONTHLY"
+                        | "YEARLY",
+                    })
                   }
                   options={frequencyOptions}
                 />
-                <Input
-                  label="Amount (LKR)"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={recurringForm.amount || ""}
-                  onChange={(e) => updateR({ amount: Number(e.target.value) })}
-                  placeholder="0.00"
+                <Select
+                  label="Account"
+                  value={recurringForm.account_id}
+                  onChange={(e) =>
+                    updateR({ account_id: Number(e.target.value) })
+                  }
+                  options={accountOptions}
                 />
-
-                {recurringForm.transaction_type !== "TRANSFER" ? (
-                  <>
-                    <Select
-                      label="Account"
-                      value={String(recurringForm.account_id)}
-                      onChange={(e) =>
-                        updateR({ account_id: Number(e.target.value) })
-                      }
-                      options={accountOptions}
-                    />
-                    <Select
-                      label="Category"
-                      value={String(recurringForm.category_id || 0)}
-                      onChange={(e) =>
-                        updateR({ category_id: Number(e.target.value) || null })
-                      }
-                      options={getCategoryOptions(
-                        recurringForm.transaction_type as "INCOME" | "EXPENSE",
-                      )}
-                    />
-                  </>
+                {recurringForm.transaction_type === "TRANSFER" ? (
+                  <Select
+                    label="To Account"
+                    value={recurringForm.to_account_id || 0}
+                    onChange={(e) =>
+                      updateR({
+                        to_account_id: Number(e.target.value) || null,
+                      })
+                    }
+                    options={accountOptions}
+                  />
                 ) : (
-                  <>
-                    <Select
-                      label="From Account"
-                      value={String(recurringForm.account_id)}
-                      onChange={(e) =>
-                        updateR({ account_id: Number(e.target.value) })
-                      }
-                      options={accountOptions}
-                    />
-                    <Select
-                      label="To Account"
-                      value={String(recurringForm.to_account_id || 0)}
-                      onChange={(e) =>
-                        updateR({
-                          to_account_id: Number(e.target.value) || null,
-                        })
-                      }
-                      options={accountOptions.filter(
-                        (a) =>
-                          a.value === "0" ||
-                          a.value !== String(recurringForm.account_id),
-                      )}
-                    />
-                  </>
+                  <Select
+                    label="Category"
+                    value={recurringForm.category_id || 0}
+                    onChange={(e) =>
+                      updateR({
+                        category_id: Number(e.target.value) || null,
+                      })
+                    }
+                    options={getCategoryOptions(recurringForm.transaction_type)}
+                  />
                 )}
-
+                <Input
+                  label="Amount"
+                  type="number"
+                  value={recurringForm.amount}
+                  onChange={(e) => updateR({ amount: Number(e.target.value) })}
+                />
                 <Input
                   label="Start Date"
                   type="date"
@@ -462,26 +428,25 @@ export default function AdvancedView() {
               }
               variant={showInstallmentForm ? "secondary" : "primary"}
             >
-              {showInstallmentForm ? "Cancel" : "New Plan"}
+              {showInstallmentForm ? "Cancel" : "New Installment Plan"}
             </Button>
           </div>
 
           {showInstallmentForm && (
-            <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700 shadow-sm">
-              <h3 className="font-semibold text-gray-900 dark:text-white mb-5 flex items-center gap-2">
-                <CreditCard className="w-5 h-5 text-blue-500" />
-                New Installment Plan
+            <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+              <h3 className="font-medium text-gray-900 dark:text-white mb-4">
+                Create Installment Plan
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <Input
                   label="Plan Name"
                   value={installmentForm.name}
                   onChange={(e) => updateI({ name: e.target.value })}
-                  placeholder="e.g., Laptop Purchase, Phone Installment"
+                  placeholder="e.g., Laptop Purchase"
                 />
                 <Select
                   label="Account"
-                  value={String(installmentForm.account_id)}
+                  value={installmentForm.account_id}
                   onChange={(e) =>
                     updateI({ account_id: Number(e.target.value) })
                   }
@@ -489,37 +454,27 @@ export default function AdvancedView() {
                 />
                 <Select
                   label="Category"
-                  value={String(installmentForm.category_id)}
+                  value={installmentForm.category_id}
                   onChange={(e) =>
                     updateI({ category_id: Number(e.target.value) })
                   }
-                  options={getCategoryOptions("EXPENSE")}
+                  options={expenseCategoryOptions}
                 />
                 <Input
-                  label="Total Amount (LKR)"
+                  label="Total Amount"
                   type="number"
-                  min="0"
-                  step="0.01"
-                  value={installmentForm.total_amount || ""}
+                  value={installmentForm.total_amount}
                   onChange={(e) =>
                     updateI({ total_amount: Number(e.target.value) })
                   }
-                  placeholder="0.00"
                 />
                 <Input
                   label="Number of Installments"
                   type="number"
-                  min="1"
                   value={installmentForm.num_installments}
                   onChange={(e) =>
                     updateI({ num_installments: Number(e.target.value) })
                   }
-                />
-                <Select
-                  label="Frequency"
-                  value={installmentForm.frequency}
-                  onChange={(e) => updateI({ frequency: e.target.value })}
-                  options={installmentFreqOptions}
                 />
                 <Input
                   label="Start Date"
@@ -527,29 +482,29 @@ export default function AdvancedView() {
                   value={installmentForm.start_date}
                   onChange={(e) => updateI({ start_date: e.target.value })}
                 />
-                <Input
-                  label="Memo (Optional)"
-                  value={installmentForm.memo || ""}
-                  onChange={(e) => updateI({ memo: e.target.value || null })}
-                  placeholder="e.g., 0% interest plan from Samsung"
-                />
-              </div>
-
-              {/* Payment Preview */}
-              <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800/40">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-700 dark:text-gray-300">
-                    Payment per installment:
-                  </span>
-                  <span className="text-lg font-bold text-blue-600 dark:text-blue-400">
-                    LKR{" "}
-                    {Number(monthlyPaymentPreview).toLocaleString("en-US", {
-                      minimumFractionDigits: 2,
-                    })}
-                  </span>
+                <div className="md:col-span-2">
+                  <Input
+                    label="Memo (Optional)"
+                    value={installmentForm.memo || ""}
+                    onChange={(e) => updateI({ memo: e.target.value || null })}
+                  />
                 </div>
               </div>
-
+              {/* Payment preview */}
+              <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-100 dark:border-blue-800/30">
+                <p className="text-sm text-gray-700 dark:text-gray-300">
+                  Monthly Payment:{" "}
+                  <span className="font-bold text-gray-900 dark:text-white">
+                    LKR{" "}
+                    {installmentForm.num_installments > 0
+                      ? (
+                          installmentForm.total_amount /
+                          installmentForm.num_installments
+                        ).toFixed(2)
+                      : "0.00"}
+                  </span>
+                </p>
+              </div>
               <div className="flex justify-end mt-5">
                 <Button
                   onClick={handleCreateInstallment}
@@ -564,7 +519,7 @@ export default function AdvancedView() {
             </div>
           )}
 
-          <InstallmentPlanList refreshKey={installmentRefreshKey} />
+          <InstallmentPlanList key={installmentRefreshKey} />
         </div>
       )}
     </div>

@@ -33,7 +33,7 @@ export default function CategoriesView() {
       );
       setCategories(data);
     } catch (err) {
-      setError(err as string);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -46,7 +46,7 @@ export default function CategoriesView() {
       await loadCategories();
       setShowModal(false);
     } catch (err) {
-      setError(err as string);
+      setError(err instanceof Error ? err.message : String(err));
       throw err;
     }
   };
@@ -59,7 +59,7 @@ export default function CategoriesView() {
       setShowModal(false);
       setEditingCategory(null);
     } catch (err) {
-      setError(err as string);
+      setError(err instanceof Error ? err.message : String(err));
       throw err;
     }
   };
@@ -72,7 +72,7 @@ export default function CategoriesView() {
       await invoke("delete_category", { categoryId });
       await loadCategories();
     } catch (err) {
-      setError(err as string);
+      setError(err instanceof Error ? err.message : String(err));
     }
   };
 

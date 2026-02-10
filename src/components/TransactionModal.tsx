@@ -28,6 +28,7 @@ export default function TransactionModal({
 }: TransactionModalProps) {
   const [formData, setFormData] = useState({
     date: transaction.date.split("T")[0],
+    amount: transaction.amount.toString(),
     category_id: transaction.category_id || 0,
     memo: transaction.memo || "",
   });
@@ -40,9 +41,15 @@ export default function TransactionModal({
     setError(null);
 
     try {
+      const amount = parseFloat(formData.amount);
+      if (isNaN(amount) || amount <= 0) {
+        throw new Error("Please enter a valid amount greater than 0");
+      }
+
       await onSave({
         id: transaction.id,
         date: formData.date,
+        amount,
         category_id: formData.category_id || undefined,
         memo: formData.memo || undefined,
       });
@@ -94,12 +101,21 @@ export default function TransactionModal({
             </div>
           )}
 
+          {/* Read-only info */}
           <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-lg space-y-2">
             <p className="text-sm text-gray-600 dark:text-gray-400">
-              <strong>Type:</strong> {transaction.transaction_type}
-            </p>
-            <p className="text-sm text-gray-600 dark:text-gray-400">
-              <strong>Amount:</strong> {transaction.amount.toFixed(2)}
+              <strong>Type:</strong>{" "}
+              <span
+                className={
+                  transaction.transaction_type === "INCOME"
+                    ? "text-green-600 dark:text-green-400"
+                    : transaction.transaction_type === "EXPENSE"
+                      ? "text-red-600 dark:text-red-400"
+                      : "text-blue-600 dark:text-blue-400"
+                }
+              >
+                {transaction.transaction_type}
+              </span>
             </p>
             <p className="text-sm text-gray-600 dark:text-gray-400">
               <strong>Account:</strong>{" "}
@@ -114,6 +130,18 @@ export default function TransactionModal({
             type="date"
             value={formData.date}
             onChange={(e) => setFormData({ ...formData, date: e.target.value })}
+            required
+          />
+
+          {/* Editable amount */}
+          <Input
+            label="Amount"
+            type="number"
+            step="0.01"
+            value={formData.amount}
+            onChange={(e) =>
+              setFormData({ ...formData, amount: e.target.value })
+            }
             required
           />
 

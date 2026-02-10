@@ -39,7 +39,7 @@ export default function BudgetView() {
       setAlerts(budgetAlerts);
       setCategories(cats);
     } catch (err) {
-      setError(err as string);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -52,7 +52,7 @@ export default function BudgetView() {
       await loadData();
       setShowForm(false);
     } catch (err) {
-      setError(err as string);
+      setError(err instanceof Error ? err.message : String(err));
       throw err;
     }
   };
@@ -65,7 +65,7 @@ export default function BudgetView() {
       setShowForm(false);
       setEditingBudget(null);
     } catch (err) {
-      setError(err as string);
+      setError(err instanceof Error ? err.message : String(err));
       throw err;
     }
   };
@@ -78,7 +78,7 @@ export default function BudgetView() {
       await invoke("delete_budget", { budgetId });
       await loadData();
     } catch (err) {
-      setError(err as string);
+      setError(err instanceof Error ? err.message : String(err));
     }
   };
 

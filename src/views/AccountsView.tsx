@@ -1,23 +1,44 @@
 // File: src/views/AccountsView.tsx
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { PlusIcon } from "@heroicons/react/24/outline";
+import { PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import Button from "../components/Button";
 import Input from "../components/Input";
 import Select from "../components/Select";
 import AccountCard from "../components/AccountCard";
+import ConfirmDialog from "../components/ConfirmDialog";
 import type {
   AccountGroup,
   AccountWithBalance,
   CreateAccountInput,
+  UpdateAccountInput,
 } from "../types/account";
 
 export default function AccountsView() {
   const [accountGroups, setAccountGroups] = useState<AccountGroup[]>([]);
   const [accounts, setAccounts] = useState<AccountWithBalance[]>([]);
   const [loading, setLoading] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
+
+  // Edit modal state
+  const [editingAccount, setEditingAccount] =
+    useState<AccountWithBalance | null>(null);
+  const [editForm, setEditForm] = useState<UpdateAccountInput>({
+    id: 0,
+    name: "",
+    group_id: 0,
+    currency: "",
+  });
+  const [editSaving, setEditSaving] = useState(false);
+
+  // Delete confirm state
+  const [deleteConfirm, setDeleteConfirm] = useState<{
+    open: boolean;
+    accountId: number | null;
+    accountName: string;
+  }>({ open: false, accountId: null, accountName: "" });
 
   const [formData, setFormData] = useState<CreateAccountInput>({
     group_id: 1,
@@ -40,7 +61,7 @@ export default function AccountsView() {
       setAccountGroups(groups);
       setAccounts(accts);
     } catch (err) {
-      setError(err as string);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -48,7 +69,7 @@ export default function AccountsView() {
 
   const handleCreateAccount = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
+    setCreating(true);
     setError(null);
     try {
       await invoke("create_account", { input: formData });
@@ -56,24 +77,65 @@ export default function AccountsView() {
       setFormData({ group_id: 1, name: "", initial_balance: 0 });
       await loadData();
     } catch (err) {
-      setError(err as string);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      setCreating(false);
     }
   };
 
-  const handleDeleteAccount = async (accountId: number) => {
-    if (!confirm("Are you sure you want to delete this account?")) return;
+  // ─── Edit ───
+  const handleEditOpen = (accountId: number) => {
+    const account = accounts.find((a) => a.id === accountId);
+    if (!account) return;
+    setEditingAccount(account);
+    setEditForm({
+      id: account.id,
+      name: account.name,
+      group_id: account.group_id,
+      currency: account.currency,
+    });
+  };
 
-    setLoading(true);
+  const handleEditSave = async () => {
+    if (!editForm.name?.trim()) {
+      setError("Account name cannot be empty");
+      return;
+    }
+    setEditSaving(true);
     setError(null);
     try {
-      await invoke("delete_account", { accountId });
+      await invoke("update_account", { input: editForm });
+      setEditingAccount(null);
       await loadData();
     } catch (err) {
-      setError(err as string);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      setEditSaving(false);
+    }
+  };
+
+  // ─── Delete ───
+  const handleDeleteRequest = (accountId: number) => {
+    const account = accounts.find((a) => a.id === accountId);
+    setDeleteConfirm({
+      open: true,
+      accountId,
+      accountName: account?.name || "",
+    });
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!deleteConfirm.accountId) return;
+    setError(null);
+    try {
+      await invoke("delete_account", {
+        accountId: deleteConfirm.accountId,
+      });
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeleteConfirm({ open: false, accountId: null, accountName: "" });
     }
   };
 
@@ -134,7 +196,6 @@ export default function AccountsView() {
                 }))}
                 required
               />
-
               <Input
                 label="Account Name"
                 type="text"
@@ -145,7 +206,6 @@ export default function AccountsView() {
                 placeholder="e.g., My Wallet, Citi Bank"
                 required
               />
-
               <Input
                 label="Initial Balance"
                 type="number"
@@ -160,7 +220,6 @@ export default function AccountsView() {
                 placeholder="0.00"
                 required
               />
-
               <Input
                 label="Currency"
                 type="text"
@@ -171,9 +230,8 @@ export default function AccountsView() {
                 placeholder="LKR"
               />
             </div>
-
-            <Button type="submit" disabled={loading} fullWidth>
-              {loading ? "Creating..." : "Create Account"}
+            <Button type="submit" disabled={creating} fullWidth>
+              {creating ? "Creating..." : "Create Account"}
             </Button>
           </form>
         </div>
@@ -213,10 +271,12 @@ export default function AccountsView() {
                       id={account.id}
                       name={account.name}
                       groupName={getGroupName(account.group_id)}
+                      groupId={account.group_id}
                       currentBalance={account.current_balance}
                       initialBalance={account.initial_balance}
                       currency={account.currency}
-                      onDelete={handleDeleteAccount}
+                      onEdit={handleEditOpen}
+                      onDelete={handleDeleteRequest}
                     />
                   ))}
                 </div>
@@ -225,6 +285,88 @@ export default function AccountsView() {
           })}
         </div>
       )}
+
+      {/* ─── Edit Account Modal ─── */}
+      {editingAccount && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl max-w-md w-full">
+            <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700">
+              <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+                Edit Account
+              </h2>
+              <button
+                onClick={() => setEditingAccount(null)}
+                className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+              >
+                <XMarkIcon className="h-5 w-5 text-gray-500" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <Input
+                label="Account Name"
+                value={editForm.name || ""}
+                onChange={(e) =>
+                  setEditForm({ ...editForm, name: e.target.value })
+                }
+                required
+              />
+              <Select
+                label="Account Group"
+                value={editForm.group_id || 0}
+                onChange={(e) =>
+                  setEditForm({
+                    ...editForm,
+                    group_id: parseInt(e.target.value),
+                  })
+                }
+                options={accountGroups.map((g) => ({
+                  value: g.id,
+                  label: g.name,
+                }))}
+              />
+              <Input
+                label="Currency"
+                value={editForm.currency || ""}
+                onChange={(e) =>
+                  setEditForm({ ...editForm, currency: e.target.value })
+                }
+              />
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Initial balance cannot be changed after creation.
+              </p>
+              <div className="flex gap-3 pt-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => setEditingAccount(null)}
+                  fullWidth
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleEditSave}
+                  disabled={editSaving}
+                  fullWidth
+                >
+                  {editSaving ? "Saving..." : "Save Changes"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation */}
+      <ConfirmDialog
+        open={deleteConfirm.open}
+        title="Delete Account"
+        message={`Are you sure you want to delete "${deleteConfirm.accountName}"? This cannot be undone. Accounts with existing transactions cannot be deleted.`}
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={handleDeleteConfirm}
+        onCancel={() =>
+          setDeleteConfirm({ open: false, accountId: null, accountName: "" })
+        }
+      />
     </div>
   );
 }

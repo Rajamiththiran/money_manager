@@ -1,5 +1,4 @@
 // File: src/types/navigation.ts
-// File: src/types/navigation.ts
 export type View =
   | "dashboard"
   | "accounts"

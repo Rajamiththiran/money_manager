@@ -30,3 +30,10 @@ export interface CreateAccountInput {
   initial_balance: number;
   currency?: string;
 }
+
+export interface UpdateAccountInput {
+  id: number;
+  name?: string;
+  group_id?: number;
+  currency?: string;
+}

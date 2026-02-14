@@ -1,5 +1,7 @@
 // File: src-tauri/src/commands/accounts.rs
-use crate::models::account::{Account, AccountGroup, AccountWithBalance, CreateAccountInput};
+use crate::models::account::{
+    Account, AccountGroup, AccountWithBalance, CreateAccountInput, UpdateAccountInput,
+};
 use sqlx::{Row, SqlitePool};
 use tauri::State;
 
@@ -118,6 +120,73 @@ pub async fn create_account(
     .map_err(|e| format!("Failed to create account: {}", e))?;
 
     Ok(result.last_insert_rowid())
+}
+
+#[tauri::command]
+pub async fn update_account(
+    pool: State<'_, SqlitePool>,
+    input: UpdateAccountInput,
+) -> Result<(), String> {
+    // Verify account exists
+    let exists = sqlx::query("SELECT id FROM accounts WHERE id = ?")
+        .bind(input.id)
+        .fetch_optional(pool.inner())
+        .await
+        .map_err(|e| format!("Database error: {}", e))?
+        .is_some();
+
+    if !exists {
+        return Err("Account not found".to_string());
+    }
+
+    // Build dynamic UPDATE
+    let mut set_clauses: Vec<String> = Vec::new();
+
+    if let Some(ref name) = input.name {
+        if name.trim().is_empty() {
+            return Err("Account name cannot be empty".to_string());
+        }
+        set_clauses.push(format!("name = '{}'", name.replace('\'', "''")));
+    }
+
+    if let Some(group_id) = input.group_id {
+        // Validate group exists
+        let group_exists = sqlx::query("SELECT id FROM account_groups WHERE id = ?")
+            .bind(group_id)
+            .fetch_optional(pool.inner())
+            .await
+            .map_err(|e| format!("Database error: {}", e))?
+            .is_some();
+
+        if !group_exists {
+            return Err("Account group does not exist".to_string());
+        }
+        set_clauses.push(format!("group_id = {}", group_id));
+    }
+
+    if let Some(ref currency) = input.currency {
+        if currency.trim().is_empty() {
+            return Err("Currency cannot be empty".to_string());
+        }
+        set_clauses.push(format!("currency = '{}'", currency.replace('\'', "''")));
+    }
+
+    if set_clauses.is_empty() {
+        return Ok(());
+    }
+
+    let sql = format!(
+        "UPDATE accounts SET {} WHERE id = ?",
+        set_clauses.join(", ")
+    );
+
+    sqlx::query(&sql)
+        .bind(input.id)
+        .execute(pool.inner())
+        .await
+        .map_err(|e| format!("Failed to update account: {}", e))?;
+
+    Ok(())
 }
 
 #[tauri::command]

@@ -54,7 +54,6 @@ export default function InstallmentPlanList({
 
   const loadPlans = async () => {
     try {
-      // Fetch all plans, then fetch details for each
       const plansData = await invoke<
         Array<{
           id: number;
@@ -76,7 +75,6 @@ export default function InstallmentPlanList({
         }>
       >("get_installment_plans", { statusFilter: null });
 
-      // Fetch details for each plan (includes payments, account name, category name)
       const detailedPlans = await Promise.all(
         plansData.map((plan) =>
           invoke<InstallmentPlanWithDetails>(
@@ -117,7 +115,9 @@ export default function InstallmentPlanList({
 
   const handleCancelPlan = async (planId: number, planName: string) => {
     if (
-      !confirm(`Cancel installment plan "${planName}"? This cannot be undone.`)
+      !confirm(
+        `Cancel installment plan "${planName}"?\n\nThis cannot be undone. All recorded payments will remain in your transaction history.`,
+      )
     )
       return;
 
@@ -133,7 +133,7 @@ export default function InstallmentPlanList({
   const handleDeletePlan = async (planId: number, planName: string) => {
     if (
       !confirm(
-        `Delete "${planName}"? Plans with existing payments cannot be deleted — cancel instead.`,
+        `Delete installment plan "${planName}"?\n\nThe plan will be removed but all recorded transactions will remain in your reports and history.`,
       )
     )
       return;
@@ -201,6 +201,9 @@ export default function InstallmentPlanList({
         const isExpanded = expandedPlan === plan.id;
         const statusStyle = STATUS_STYLES[plan.status] || STATUS_STYLES.ACTIVE;
         const isActive = plan.status === "ACTIVE";
+        const isCompleted = plan.status === "COMPLETED";
+        const isCancelled = plan.status === "CANCELLED";
+        const canDelete = isCompleted || isCancelled;
 
         return (
           <div
@@ -210,128 +213,135 @@ export default function InstallmentPlanList({
               ${
                 isActive
                   ? "border-gray-200 dark:border-gray-700"
-                  : "border-gray-300 dark:border-gray-600"
+                  : "border-gray-200/60 dark:border-gray-700/60 opacity-90"
               }
-              transition-all duration-200
+              p-5 transition-all
             `}
           >
-            <div className="p-5">
-              {/* Header */}
-              <div className="flex items-start justify-between mb-3">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <h3 className="font-semibold text-gray-900 dark:text-white truncate">
-                      {plan.name}
-                    </h3>
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusStyle.bg} ${statusStyle.text}`}
-                    >
-                      {plan.status}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
-                    <span>{item.account_name}</span>
-                    <span>•</span>
-                    <span>{item.category_name}</span>
-                    <span>•</span>
-                    <span>
-                      {plan.installments_paid} of {plan.num_installments} paid
-                    </span>
-                  </div>
-                </div>
-                <div className="text-right ml-4 flex-shrink-0">
-                  <div className="text-sm text-gray-500 dark:text-gray-400">
-                    Total
-                  </div>
-                  <div className="text-xl font-bold text-gray-900 dark:text-white">
-                    LKR{" "}
-                    {plan.total_amount.toLocaleString("en-US", {
-                      minimumFractionDigits: 2,
-                    })}
-                  </div>
-                </div>
-              </div>
-
-              {/* Progress */}
-              <div className="mb-3">
-                <div className="flex justify-between text-xs mb-1.5">
-                  <span className="text-gray-500 dark:text-gray-400">
-                    LKR{" "}
-                    {plan.amount_per_installment.toLocaleString("en-US", {
-                      minimumFractionDigits: 2,
-                    })}{" "}
-                    / {plan.frequency.toLowerCase()}
-                  </span>
-                  <span className="font-medium text-gray-700 dark:text-gray-200">
-                    {progressPercent.toFixed(0)}%
+            {/* Header */}
+            <div className="flex justify-between items-start mb-3">
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <h3 className="font-semibold text-gray-900 dark:text-white">
+                    {plan.name}
+                  </h3>
+                  <span
+                    className={`text-xs font-medium px-2 py-0.5 rounded-full ${statusStyle.bg} ${statusStyle.text}`}
+                  >
+                    {plan.status}
                   </span>
                 </div>
-                <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2.5">
-                  <div
-                    className={`h-2.5 rounded-full transition-all duration-500 ${getProgressColor(progressPercent)}`}
-                    style={{ width: `${progressPercent}%` }}
-                  />
-                </div>
-                <div className="flex justify-between text-xs mt-1.5">
-                  <span className="text-emerald-600 dark:text-emerald-400 font-medium">
-                    Paid: LKR{" "}
-                    {plan.total_paid.toLocaleString("en-US", {
-                      minimumFractionDigits: 2,
-                    })}
-                  </span>
-                  <span className="text-red-500 dark:text-red-400 font-medium">
-                    Remaining: LKR{" "}
-                    {item.remaining_amount.toLocaleString("en-US", {
-                      minimumFractionDigits: 2,
-                    })}
+                <div className="text-sm text-gray-500 dark:text-gray-400">
+                  <span>{item.account_name}</span>
+                  <span className="mx-1.5">•</span>
+                  <span>{item.category_name}</span>
+                  <span className="mx-1.5">•</span>
+                  <span>
+                    {plan.installments_paid} of {plan.num_installments} paid
                   </span>
                 </div>
               </div>
+              <div className="text-right">
+                <div className="text-sm text-gray-500 dark:text-gray-400">
+                  Total
+                </div>
+                <div className="text-xl font-bold text-gray-900 dark:text-white">
+                  LKR{" "}
+                  {plan.total_amount.toLocaleString("en-US", {
+                    minimumFractionDigits: 2,
+                  })}
+                </div>
+              </div>
+            </div>
 
-              {plan.memo && (
-                <p className="text-sm text-gray-500 dark:text-gray-400 italic mb-3">
-                  {plan.memo}
-                </p>
+            {/* Progress */}
+            <div className="mb-3">
+              <div className="flex justify-between text-xs mb-1.5">
+                <span className="text-gray-500 dark:text-gray-400">
+                  LKR{" "}
+                  {plan.amount_per_installment.toLocaleString("en-US", {
+                    minimumFractionDigits: 2,
+                  })}{" "}
+                  / {plan.frequency.toLowerCase()}
+                </span>
+                <span className="font-medium text-gray-700 dark:text-gray-200">
+                  {progressPercent.toFixed(0)}%
+                </span>
+              </div>
+              <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2.5">
+                <div
+                  className={`h-2.5 rounded-full transition-all duration-500 ${getProgressColor(progressPercent)}`}
+                  style={{ width: `${progressPercent}%` }}
+                />
+              </div>
+              <div className="flex justify-between text-xs mt-1.5">
+                <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                  Paid: LKR{" "}
+                  {plan.total_paid.toLocaleString("en-US", {
+                    minimumFractionDigits: 2,
+                  })}
+                </span>
+                <span className="text-red-500 dark:text-red-400 font-medium">
+                  Remaining: LKR{" "}
+                  {item.remaining_amount.toLocaleString("en-US", {
+                    minimumFractionDigits: 2,
+                  })}
+                </span>
+              </div>
+            </div>
+
+            {plan.memo && (
+              <p className="text-sm text-gray-500 dark:text-gray-400 italic mb-3">
+                {plan.memo}
+              </p>
+            )}
+
+            {/* Actions */}
+            <div className="flex gap-2 flex-wrap">
+              {/* Pay button - only for ACTIVE plans */}
+              {isActive && (
+                <Button
+                  size="sm"
+                  onClick={() => handlePayInstallment(plan.id, plan.name)}
+                  disabled={processingPayment === plan.id}
+                  icon={<CircleDollarSign className="w-3.5 h-3.5" />}
+                >
+                  {processingPayment === plan.id
+                    ? "Processing..."
+                    : `Pay LKR ${item.next_payment_amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}`}
+                </Button>
               )}
 
-              {/* Actions */}
-              <div className="flex gap-2 flex-wrap">
-                {isActive && (
-                  <Button
-                    size="sm"
-                    onClick={() => handlePayInstallment(plan.id, plan.name)}
-                    disabled={processingPayment === plan.id}
-                    icon={<CircleDollarSign className="w-3.5 h-3.5" />}
-                  >
-                    {processingPayment === plan.id
-                      ? "Processing..."
-                      : `Pay LKR ${item.next_payment_amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}`}
-                  </Button>
-                )}
+              {/* Show/Hide Payments toggle */}
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setExpandedPlan(isExpanded ? null : plan.id)}
+                icon={
+                  isExpanded ? (
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  ) : (
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  )
+                }
+              >
+                {isExpanded ? "Hide" : "Show"} Payments
+              </Button>
+
+              {/* Cancel button - only for ACTIVE plans */}
+              {isActive && (
                 <Button
                   variant="secondary"
                   size="sm"
-                  onClick={() => setExpandedPlan(isExpanded ? null : plan.id)}
-                  icon={
-                    isExpanded ? (
-                      <ChevronUp className="w-3.5 h-3.5" />
-                    ) : (
-                      <ChevronDown className="w-3.5 h-3.5" />
-                    )
-                  }
+                  onClick={() => handleCancelPlan(plan.id, plan.name)}
+                  icon={<Ban className="w-3.5 h-3.5" />}
                 >
-                  {isExpanded ? "Hide" : "Show"} Payments
+                  Cancel Plan
                 </Button>
-                {isActive && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => handleCancelPlan(plan.id, plan.name)}
-                    icon={<Ban className="w-3.5 h-3.5" />}
-                  >
-                    Cancel Plan
-                  </Button>
-                )}
+              )}
+
+              {/* Delete button - only for COMPLETED or CANCELLED plans */}
+              {canDelete && (
                 <Button
                   variant="danger"
                   size="sm"
@@ -340,75 +350,79 @@ export default function InstallmentPlanList({
                 >
                   Delete
                 </Button>
-              </div>
-
-              {/* Payment Schedule (Expanded) */}
-              {isExpanded && (
-                <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
-                  <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3 flex items-center gap-2">
-                    <Clock className="w-4 h-4" />
-                    Payment Schedule
-                  </h4>
-                  {item.payments.length > 0 ? (
-                    <div className="space-y-2">
-                      {item.payments.map((payment) => {
-                        const isPaid = payment.status === "PAID";
-                        return (
-                          <div
-                            key={payment.installment_number}
-                            className={`
-                              flex items-center justify-between p-3 rounded-lg text-sm
-                              ${
-                                isPaid
-                                  ? "bg-emerald-50 dark:bg-emerald-900/20"
-                                  : "bg-gray-50 dark:bg-gray-700/40"
-                              }
-                            `}
-                          >
-                            <div className="flex items-center gap-3">
-                              {isPaid ? (
-                                <CheckCircle2 className="w-4 h-4 text-emerald-500 flex-shrink-0" />
-                              ) : (
-                                <div className="w-4 h-4 rounded-full border-2 border-gray-300 dark:border-gray-500 flex-shrink-0" />
-                              )}
-                              <span className="font-medium text-gray-700 dark:text-gray-200">
-                                #{payment.installment_number}
-                              </span>
-                              <span className="text-gray-500 dark:text-gray-400">
-                                Due: {formatDate(payment.due_date)}
-                              </span>
-                              {isPaid && payment.paid_date && (
-                                <span className="text-xs text-emerald-600 dark:text-emerald-400">
-                                  Paid: {formatDate(payment.paid_date)}
-                                </span>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-3">
-                              <span className="font-semibold text-gray-800 dark:text-gray-100">
-                                LKR{" "}
-                                {payment.amount.toLocaleString("en-US", {
-                                  minimumFractionDigits: 2,
-                                })}
-                              </span>
-                              {isPaid && (
-                                <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
-                                  ✓ Paid
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <p className="text-sm text-gray-400 dark:text-gray-500 text-center py-4">
-                      No payment history yet. Click "Pay" to make the first
-                      installment.
-                    </p>
-                  )}
-                </div>
               )}
             </div>
+
+            {/* Payment Schedule (Expanded) */}
+            {isExpanded && (
+              <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+                <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3 flex items-center gap-2">
+                  <Clock className="w-4 h-4" />
+                  Payment Schedule
+                </h4>
+                {item.payments.length > 0 ? (
+                  <div className="space-y-2">
+                    {item.payments.map((payment) => {
+                      const isPaid = payment.status === "PAID";
+                      return (
+                        <div
+                          key={payment.installment_number}
+                          className={`
+                            flex items-center justify-between p-3 rounded-lg text-sm
+                            ${
+                              isPaid
+                                ? "bg-emerald-50 dark:bg-emerald-900/20"
+                                : "bg-gray-50 dark:bg-gray-700/40"
+                            }
+                          `}
+                        >
+                          <div className="flex items-center gap-3">
+                            {isPaid ? (
+                              <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                            ) : (
+                              <Clock className="w-4 h-4 text-gray-400" />
+                            )}
+                            <span className="font-medium text-gray-900 dark:text-white">
+                              #{payment.installment_number}
+                            </span>
+                            <span className="text-gray-500 dark:text-gray-400">
+                              Due: {formatDate(payment.due_date)}
+                            </span>
+                            {isPaid && payment.paid_date && (
+                              <span className="text-xs text-emerald-600 dark:text-emerald-400">
+                                Paid: {formatDate(payment.paid_date)}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className="font-semibold text-gray-900 dark:text-white">
+                              LKR{" "}
+                              {payment.amount.toLocaleString("en-US", {
+                                minimumFractionDigits: 2,
+                              })}
+                            </span>
+                            {isPaid && (
+                              <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                                Paid
+                              </span>
+                            )}
+                            {!isPaid && isActive && (
+                              <span className="text-xs font-medium text-gray-400 dark:text-gray-500">
+                                Pending
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-400 dark:text-gray-500 text-center py-4">
+                    No payments recorded yet
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         );
       })}

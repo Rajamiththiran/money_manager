@@ -27,6 +27,14 @@ pub struct CreateAccountInput {
     pub currency: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateAccountInput {
+    pub id: i64,
+    pub name: Option<String>,
+    pub group_id: Option<i64>,
+    pub currency: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct AccountWithBalance {
     #[serde(flatten)]

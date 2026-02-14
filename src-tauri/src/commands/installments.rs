@@ -261,29 +261,21 @@ pub async fn process_installment_payment(
 ) -> Result<InstallmentPayment, String> {
     let mut plan = get_installment_plan(pool.clone(), plan_id).await?;
 
-    if plan.status == "COMPLETED" {
-        return Err("Installment plan is already completed".to_string());
-    }
-
-    if plan.status == "CANCELLED" {
-        return Err("Installment plan is cancelled".to_string());
+    if plan.status != "ACTIVE" {
+        return Err("Can only process payments for active installment plans".to_string());
     }
 
     if plan.installments_paid >= plan.num_installments {
         return Err("All installments have been paid".to_string());
     }
 
-    let next_installment_number = plan.installments_paid + 1;
-    let payment_amount = if next_installment_number == plan.num_installments {
-        plan.total_amount - plan.total_paid
-    } else {
-        plan.amount_per_installment
-    };
-
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let next_installment_number = plan.installments_paid + 1;
+    let payment_amount = plan.amount_per_installment;
+
     let memo = format!(
-        "{} - Installment {}/{}",
-        plan.name, next_installment_number, plan.num_installments
+        "Installment {}/{} for {}",
+        next_installment_number, plan.num_installments, plan.name
     );
 
     let transaction_result = sqlx::query(
@@ -421,6 +413,15 @@ pub async fn cancel_installment_plan(
     pool: tauri::State<'_, SqlitePool>,
     plan_id: i64,
 ) -> Result<(), String> {
+    let plan = get_installment_plan(pool.clone(), plan_id).await?;
+
+    if plan.status != "ACTIVE" {
+        return Err(format!(
+            "Cannot cancel a {} plan. Only active plans can be cancelled.",
+            plan.status.to_lowercase()
+        ));
+    }
+
     sqlx::query(
         r#"
         UPDATE installment_plans
@@ -442,22 +443,26 @@ pub async fn delete_installment_plan(
     pool: tauri::State<'_, SqlitePool>,
     plan_id: i64,
 ) -> Result<(), String> {
-    let count_row = sqlx::query(
-        "SELECT COUNT(*) as count FROM installment_payments WHERE installment_plan_id = ?",
-    )
-    .bind(plan_id)
-    .fetch_one(pool.inner())
-    .await
-    .map_err(|e| e.to_string())?;
+    let plan = get_installment_plan(pool.clone(), plan_id).await?;
 
-    let count: i64 = count_row.get("count");
-
-    if count > 0 {
+    // Only allow deletion of COMPLETED or CANCELLED plans
+    // ACTIVE plans must be cancelled first
+    if plan.status == "ACTIVE" {
         return Err(
-            "Cannot delete installment plan with existing payments. Cancel it instead.".to_string(),
+            "Cannot delete an active installment plan. Cancel it first, then delete.".to_string(),
         );
     }
 
+    // Delete installment payment records (transactions remain in history for reports)
+    // The installment_payments table has ON DELETE CASCADE on installment_plan_id,
+    // so deleting the plan will auto-cascade, but we do it explicitly for clarity
+    sqlx::query("DELETE FROM installment_payments WHERE installment_plan_id = ?")
+        .bind(plan_id)
+        .execute(pool.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Delete the installment plan itself
     sqlx::query("DELETE FROM installment_plans WHERE id = ?")
         .bind(plan_id)
         .execute(pool.inner())

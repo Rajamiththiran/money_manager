@@ -49,6 +49,7 @@ pub fn run() {
             commands::accounts::get_accounts,
             commands::accounts::get_accounts_with_balance,
             commands::accounts::create_account,
+            commands::accounts::update_account,
             commands::accounts::delete_account,
             // Category commands
             commands::categories::get_categories,

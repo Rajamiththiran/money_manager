@@ -4,6 +4,7 @@ import Input from "./Input";
 import Select from "./Select";
 import Button from "./Button";
 import Calculator from "./Calculator";
+import { PhotoPicker } from "./PhotoAttachment";
 import type { CreateTransactionInput } from "../types/transaction";
 import type { AccountWithBalance } from "../types/account";
 import type { CategoryWithChildren } from "../types/category";
@@ -11,7 +12,10 @@ import type { CategoryWithChildren } from "../types/category";
 interface TransactionFormProps {
   accounts: AccountWithBalance[];
   categories: CategoryWithChildren[];
-  onSubmit: (input: CreateTransactionInput) => Promise<void>;
+  onSubmit: (
+    input: CreateTransactionInput,
+    pendingPhotoPath?: string | null,
+  ) => Promise<void>;
   onCancel: () => void;
   prefillData?: {
     transaction_type?: "INCOME" | "EXPENSE" | "TRANSFER";
@@ -42,6 +46,7 @@ export default function TransactionForm({
     category_id: 0,
     memo: "",
   });
+  const [pendingPhotoPath, setPendingPhotoPath] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showCalculator, setShowCalculator] = useState(false);
@@ -49,11 +54,9 @@ export default function TransactionForm({
   // React to prefillData changes (template usage or initial load)
   useEffect(() => {
     if (prefillData) {
-      // Set the transaction type from template
       if (prefillData.transaction_type) {
         setType(prefillData.transaction_type);
       }
-      // Set form fields from template
       setFormData({
         date: new Date().toISOString().split("T")[0],
         amount: prefillData.amount?.toString() || "",
@@ -67,7 +70,6 @@ export default function TransactionForm({
         memo: prefillData.memo || "",
       });
     } else {
-      // No prefill — default to EXPENSE for manual "New Transaction"
       setType("EXPENSE");
       setFormData({
         date: new Date().toISOString().split("T")[0],
@@ -78,6 +80,7 @@ export default function TransactionForm({
         memo: "",
       });
     }
+    setPendingPhotoPath(null);
   }, [prefillData, accounts]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -113,7 +116,7 @@ export default function TransactionForm({
         throw new Error("Please select a category");
       }
 
-      await onSubmit(input);
+      await onSubmit(input, pendingPhotoPath);
 
       // Reset form
       setFormData({
@@ -124,6 +127,7 @@ export default function TransactionForm({
         category_id: 0,
         memo: "",
       });
+      setPendingPhotoPath(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -314,6 +318,12 @@ export default function TransactionForm({
             placeholder="Add a note about this transaction..."
           />
         </div>
+
+        {/* Receipt Photo */}
+        <PhotoPicker
+          selectedPath={pendingPhotoPath}
+          onSelect={setPendingPhotoPath}
+        />
 
         {/* Actions */}
         <div className="flex gap-3 pt-4">

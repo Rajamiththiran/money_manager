@@ -113,10 +113,30 @@ export default function TransactionsView() {
     setActiveFilter(filter);
   };
 
-  const handleCreate = async (input: CreateTransactionInput) => {
+  const handleCreate = async (
+    input: CreateTransactionInput,
+    pendingPhotoPath?: string | null,
+  ) => {
     setError(null);
     try {
-      await invoke("create_transaction", { input });
+      // create_transaction returns the new transaction ID
+      const transactionId = await invoke<number>("create_transaction", {
+        input,
+      });
+
+      // If a photo was selected, attach it to the newly created transaction
+      if (pendingPhotoPath) {
+        try {
+          await invoke("attach_photo", {
+            transactionId,
+            sourcePath: pendingPhotoPath,
+          });
+        } catch (photoErr) {
+          // Transaction was created successfully, but photo failed — don't roll back
+          console.error("Failed to attach photo:", photoErr);
+        }
+      }
+
       await loadTransactions();
       await loadReferenceData();
       setShowForm(false);

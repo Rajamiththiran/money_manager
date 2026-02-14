@@ -21,7 +21,7 @@ interface TransactionModalProps {
 
 export default function TransactionModal({
   transaction,
-  accounts,
+
   categories,
   onSave,
   onClose,

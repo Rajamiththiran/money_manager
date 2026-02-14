@@ -197,7 +197,7 @@ interface DbStats {
 export default function SettingsView() {
   const { theme, toggleTheme } = useTheme();
   const { accentColor: activeAccent, setAccentColor } = useAccentColor();
-  const { success, error: showError, info, warning } = useToast();
+  const { success, error: showError, info } = useToast();
 
   const [settings, setSettings] = useState<AppSettings>(() => {
     const stored = localStorage.getItem("appSettings");

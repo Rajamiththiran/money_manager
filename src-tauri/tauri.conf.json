@@ -1,11 +1,11 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
+  "$schema": "https://raw.githubusercontent.com/nicedoc/tauri-schema/main/schema.json",
   "productName": "Money Manager",
-  "version": "0.1.0",
-  "identifier": "com.miththiran.moneymanager",
+  "version": "1.0.0",
+  "identifier": "com.miththiran.money-manager",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:1420",
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build"
   },
@@ -13,10 +13,13 @@
     "windows": [
       {
         "title": "Money Manager",
-        "width": 800,
-        "height": 600,
-        "resizable": true,
-        "fullscreen": false
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1024,
+        "minHeight": 600,
+        "center": true,
+        "decorations": true,
+        "resizable": true
       }
     ],
     "security": {
@@ -25,13 +28,33 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ]
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "resources": [],
+    "copyright": "© 2025 Miththiran. All rights reserved.",
+    "category": "Finance",
+    "shortDescription": "Personal finance and money tracking application",
+    "longDescription": "A comprehensive personal finance manager with double-entry accounting, budgeting, credit card tracking, recurring transactions, and detailed analytics.",
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "",
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "languages": ["English"],
+        "headerImage": null,
+        "sidebarImage": null
+      }
+    }
   }
 }

@@ -1,7 +1,6 @@
 // File: src/components/ExportMenu.tsx
 import { useState } from "react";
 import {
-  ArrowDownTrayIcon,
   ArchiveBoxIcon,
   DocumentTextIcon,
   CodeBracketIcon,

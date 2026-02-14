@@ -1,6 +1,5 @@
 // File: src/components/TrendChart.tsx
 import {
-  LineChart,
   Line,
   XAxis,
   YAxis,
@@ -37,7 +36,7 @@ export default function TrendChart({ data }: TrendChartProps) {
     net: item.net,
   }));
 
-  const CustomTooltip = ({ active, payload, label }: any) => {
+  const CustomTooltip = ({ active, payload }: any) => {
     if (active && payload && payload.length) {
       const data = payload[0].payload;
       return (

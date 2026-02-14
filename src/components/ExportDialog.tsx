@@ -1,7 +1,7 @@
 // File: src/components/ExportDialog.tsx
 import { useState, useEffect } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
-import { writeTextFile, BaseDirectory } from "@tauri-apps/plugin-fs";
+import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { invoke } from "@tauri-apps/api/core";
 import { XMarkIcon, FolderIcon } from "@heroicons/react/24/outline";
 import Button from "./Button";

@@ -1,7 +1,7 @@
 #File: src-tauri/Cargo.toml
 [package]
 name = "money_manager"
-version = "0.1.0"
+version = "1.0.0"
 description = "A personal finance and money tracking desktop application"
 authors = ["Miththiran"]
 license = "MIT"

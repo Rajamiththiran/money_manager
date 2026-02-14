@@ -1,14 +1,7 @@
 // File: src/components/CategorySpendingChart.tsx
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  PieChart,
-  Pie,
-  Cell,
-  ResponsiveContainer,
-  Legend,
-  Tooltip,
-} from "recharts";
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 
 interface CategorySpending {
   category_id: number;
@@ -158,7 +151,7 @@ export default function CategorySpendingChart({
             dataKey="value"
             paddingAngle={2}
           >
-            {chartData.map((entry, index) => (
+            {chartData.map((_entry, index) => (
               <Cell
                 key={`cell-${index}`}
                 fill={COLORS[index % COLORS.length]}

@@ -1,0 +1,66 @@
+# File: .github/workflows/release.yml
+
+name: "Release: Build & Publish"
+
+on:
+  push:
+    tags:
+      - "v*" # Triggers on tags like v1.0.0, v1.2.3
+
+# Prevents multiple releases from running simultaneously
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write # Required to create GitHub releases
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SQLX_OFFLINE: "true"
+        with:
+          tagName: ${{ github.ref_name }} # e.g., "v1.0.0"
+          releaseName: "Money Manager ${{ github.ref_name }}"
+          releaseBody: |
+            ## What's New
+            See the [CHANGELOG](https://github.com/Rajamiththiran/money_manager/blob/main/CHANGELOG.md) for details.
+
+            ## Installation
+            1. Download `Money.Manager_X.X.X_x64-setup.exe` below
+            2. Run the installer
+            3. Launch from Start Menu
+
+            > **Note:** Windows SmartScreen may show a warning for new/unsigned apps. Click "More info" → "Run anyway" to proceed.
+          releaseDraft: true # Creates as draft so you can review first
+          prerelease: false

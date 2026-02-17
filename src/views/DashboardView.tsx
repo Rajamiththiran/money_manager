@@ -1,5 +1,5 @@
 // File: src/views/DashboardView.tsx
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   BanknotesIcon,
@@ -10,6 +10,7 @@ import {
 import StatCard from "../components/StatCard";
 import CategorySpendingChart from "../components/CategorySpendingChart";
 import Calendar from "../components/Calendar";
+import QuickAddBar from "../components/QuickAddBar";
 import type { AccountWithBalance } from "../types/account";
 import type { TransactionWithDetails } from "../types/transaction";
 
@@ -40,11 +41,7 @@ export default function DashboardView() {
   );
   const [comparisonMode, setComparisonMode] = useState<ComparisonMode>("month");
 
-  useEffect(() => {
-    loadDashboardData();
-  }, [comparisonMode]);
-
-  const loadDashboardData = async () => {
+  const loadDashboardData = useCallback(async () => {
     setLoading(true);
     try {
       const now = new Date();
@@ -130,7 +127,16 @@ export default function DashboardView() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [comparisonMode]);
+
+  useEffect(() => {
+    loadDashboardData();
+  }, [loadDashboardData]);
+
+  // Callback when QuickAddBar saves a transaction — refresh dashboard data
+  const handleTransactionAdded = useCallback(() => {
+    loadDashboardData();
+  }, [loadDashboardData]);
 
   const totalBalance = accounts.reduce(
     (sum, acc) => sum + acc.current_balance,
@@ -210,6 +216,9 @@ export default function DashboardView() {
           </select>
         </div>
       </div>
+
+      {/* Quick Add Bar */}
+      <QuickAddBar onTransactionAdded={handleTransactionAdded} />
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">

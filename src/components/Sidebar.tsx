@@ -1,4 +1,5 @@
 // File: src/components/Sidebar.tsx
+import { useEffect } from "react";
 import {
   ChartBarIcon,
   BuildingLibraryIcon,
@@ -30,6 +31,23 @@ const menuItems: { id: View; label: string; icon: React.ElementType }[] = [
 ];
 
 export default function Sidebar({ currentView, onViewChange }: SidebarProps) {
+  // Ctrl+N: navigate to Dashboard and focus QuickAddBar
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "n") {
+        e.preventDefault();
+        onViewChange("dashboard");
+        // Dispatch event after a brief delay to allow Dashboard to mount
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent("focus-quick-add"));
+        }, 50);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onViewChange]);
+
   return (
     <aside className="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col">
       <div className="p-6 border-b border-gray-200 dark:border-gray-700">

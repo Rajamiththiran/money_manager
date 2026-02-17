@@ -49,13 +49,6 @@
   .bg-accent-700 {
     background-color: rgb(var(--accent-700));
   }
-  .bg-accent-50 {
-    background-color: rgb(var(--accent-bg50));
-  }
-  .bg-accent-900\/20 {
-    background-color: rgb(var(--accent-bg900-20) / 0.2);
-  }
-
   .text-accent-400 {
     color: rgb(var(--accent-400));
   }
@@ -65,18 +58,21 @@
   .text-accent-600 {
     color: rgb(var(--accent-600));
   }
-  .text-accent-700 {
-    color: rgb(var(--accent-700));
+  .bg-accent-50 {
+    background-color: rgb(var(--accent-bg50));
   }
-
-  .ring-accent-500 {
-    --tw-ring-color: rgb(var(--accent-ring));
+  .dark .dark\:bg-accent-900\/20 {
+    background-color: rgb(var(--accent-bg900-20) / 0.2);
   }
-
-  .border-accent-500 {
-    border-color: rgb(var(--accent-500));
+  .bg-accent-100 {
+    background-color: rgb(var(--accent-bg50));
   }
-
+  .dark .dark\:bg-accent-900\/30 {
+    background-color: rgb(var(--accent-bg900-20) / 0.3);
+  }
+  .dark .dark\:text-accent-400 {
+    color: rgb(var(--accent-400));
+  }
   .focus\:ring-accent-500:focus {
     --tw-ring-color: rgb(var(--accent-ring));
   }
@@ -87,6 +83,23 @@
   .hover\:bg-accent-600:hover {
     background-color: rgb(var(--accent-600));
   }
+}
+
+/* ── Animations ───────────────────────────────────────────────── */
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out;
 }
 
 /* ── Scrollbar ─────────────────────────────────────────────────── */

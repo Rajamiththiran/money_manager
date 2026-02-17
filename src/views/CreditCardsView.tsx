@@ -37,6 +37,17 @@ import type {
 
 type Tab = "overview" | "statements" | "configure";
 
+// Helper: get the account group type from an AccountGroup object
+// The Rust backend uses #[serde(rename = "type")] so the JSON field is "type",
+// but the TS interface declares it as "account_type". We handle both cases.
+function getGroupType(group: AccountGroup): string {
+  return (
+    group.account_type ||
+    ((group as unknown as Record<string, unknown>)["type"] as string) ||
+    ""
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════
 // MAIN VIEW
 // ═══════════════════════════════════════════════════════════════
@@ -126,12 +137,12 @@ export default function CreditCardsView() {
   // Filter accounts by type for dropdowns
   const liabilityAccounts = accounts.filter((a) => {
     const group = accountGroups.find((g) => g.id === a.group_id);
-    return group?.account_type === "LIABILITY";
+    return group ? getGroupType(group) === "LIABILITY" : false;
   });
 
   const assetAccounts = accounts.filter((a) => {
     const group = accountGroups.find((g) => g.id === a.group_id);
-    return group?.account_type === "ASSET";
+    return group ? getGroupType(group) === "ASSET" : false;
   });
 
   // Accounts that don't have credit card settings yet

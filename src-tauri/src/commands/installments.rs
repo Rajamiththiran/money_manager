@@ -281,7 +281,7 @@ pub async fn process_installment_payment(
     let transaction_result = sqlx::query(
         r#"
         INSERT INTO transactions (
-            transaction_type, transaction_date, account_id, category_id,
+            type, date, account_id, category_id,
             amount, memo
         ) VALUES ('EXPENSE', ?, ?, ?, ?, ?)
         "#,
@@ -297,23 +297,11 @@ pub async fn process_installment_payment(
 
     let transaction_id = transaction_result.last_insert_rowid();
 
+    // EXPENSE: Credit the account (decrease asset) — matches create_transaction pattern
     sqlx::query(
         r#"
-        INSERT INTO journal_entries (transaction_id, account_type, account_id, debit, credit)
-        VALUES (?, 'CATEGORY', ?, ?, 0.0)
-        "#,
-    )
-    .bind(transaction_id)
-    .bind(plan.category_id)
-    .bind(payment_amount)
-    .execute(pool.inner())
-    .await
-    .map_err(|e| e.to_string())?;
-
-    sqlx::query(
-        r#"
-        INSERT INTO journal_entries (transaction_id, account_type, account_id, debit, credit)
-        VALUES (?, 'ACCOUNT', ?, 0.0, ?)
+        INSERT INTO journal_entries (transaction_id, account_id, debit, credit)
+        VALUES (?, ?, 0.0, ?)
         "#,
     )
     .bind(transaction_id)

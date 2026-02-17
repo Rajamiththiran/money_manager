@@ -8,6 +8,7 @@ import {
   WrenchScrewdriverIcon,
   DocumentChartBarIcon,
   Cog6ToothIcon,
+  CreditCardIcon,
 } from "@heroicons/react/24/outline";
 import ThemeToggle from "./ThemeToggle";
 import type { View } from "../types/navigation";
@@ -23,6 +24,7 @@ const menuItems: { id: View; label: string; icon: React.ElementType }[] = [
   { id: "categories", label: "Categories", icon: FolderIcon },
   { id: "transactions", label: "Transactions", icon: BanknotesIcon },
   { id: "budgets", label: "Budgets", icon: ChartPieIcon },
+  { id: "credit-cards", label: "Credit Cards", icon: CreditCardIcon },
   { id: "advanced", label: "Advanced", icon: WrenchScrewdriverIcon },
   { id: "reports", label: "Reports", icon: DocumentChartBarIcon },
 ];

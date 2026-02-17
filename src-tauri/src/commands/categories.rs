@@ -74,6 +74,53 @@ pub async fn get_categories_with_children(
     Ok(results)
 }
 
+/// Returns the N most recently used categories, filtered by transaction type.
+/// Queries the transactions table to find categories ordered by last-used date.
+#[tauri::command]
+pub async fn get_recent_categories(
+    pool: State<'_, SqlitePool>,
+    limit: i64,
+    transaction_type: String,
+) -> Result<Vec<Category>, String> {
+    // Validate transaction_type
+    if transaction_type != "INCOME" && transaction_type != "EXPENSE" {
+        return Err("transaction_type must be INCOME or EXPENSE".to_string());
+    }
+
+    // Validate limit
+    if limit <= 0 || limit > 50 {
+        return Err("limit must be between 1 and 50".to_string());
+    }
+
+    let rows = sqlx::query(
+        "SELECT c.id, c.parent_id, c.name, c.type
+         FROM categories c
+         INNER JOIN (
+             SELECT category_id, MAX(date) as last_used
+             FROM transactions
+             WHERE transaction_type = ? AND category_id IS NOT NULL
+             GROUP BY category_id
+         ) t ON c.id = t.category_id
+         ORDER BY t.last_used DESC
+         LIMIT ?",
+    )
+    .bind(&transaction_type)
+    .bind(limit)
+    .fetch_all(pool.inner())
+    .await
+    .map_err(|e| format!("Failed to fetch recent categories: {}", e))?;
+
+    Ok(rows
+        .iter()
+        .map(|row| Category {
+            id: row.get("id"),
+            parent_id: row.get("parent_id"),
+            name: row.get("name"),
+            category_type: row.get("type"),
+        })
+        .collect())
+}
+
 #[tauri::command]
 pub async fn create_category(
     pool: State<'_, SqlitePool>,

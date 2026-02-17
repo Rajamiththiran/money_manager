@@ -57,6 +57,7 @@ pub fn run() {
             commands::categories::create_category,
             commands::categories::update_category,
             commands::categories::delete_category,
+            commands::categories::get_recent_categories,
             // Transaction commands
             commands::transactions::get_transactions,
             commands::transactions::get_transactions_with_details,

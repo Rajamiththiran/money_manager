@@ -1,11 +1,11 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri-schema/main/schema.json",
   "productName": "Money Manager",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "identifier": "com.miththiran.money-manager",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:1420",
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build"
   },

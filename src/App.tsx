@@ -11,6 +11,7 @@ import AccountsView from "./views/AccountsView";
 import CategoriesView from "./views/CategoriesView";
 import TransactionsView from "./views/TransactionsView";
 import BudgetView from "./views/BudgetView";
+import CreditCardsView from "./views/CreditCardsView";
 import AdvancedView from "./views/AdvancedView";
 import ReportsView from "./views/ReportsView";
 import SettingsView from "./views/SettingsView";
@@ -161,6 +162,8 @@ function AppContent() {
         return <TransactionsView />;
       case "budgets":
         return <BudgetView />;
+      case "credit-cards":
+        return <CreditCardsView />;
       case "advanced":
         return <AdvancedView />;
       case "reports":

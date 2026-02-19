@@ -184,14 +184,17 @@ function AppContent() {
     );
   }
 
+  // Render LockScreen OR main app — never both simultaneously
+  // This prevents QuickAddBar autoFocus from stealing focus from LockScreen
+  if (isLocked && pinEnabled) {
+    return <LockScreen onUnlock={handleUnlock} />;
+  }
+
   return (
-    <>
-      {isLocked && pinEnabled && <LockScreen onUnlock={handleUnlock} />}
-      <div className="flex h-screen bg-gray-50 dark:bg-gray-900">
-        <Sidebar currentView={currentView} onViewChange={setCurrentView} />
-        <main className="flex-1 overflow-y-auto">{renderView()}</main>
-      </div>
-    </>
+    <div className="flex h-screen bg-gray-50 dark:bg-gray-900">
+      <Sidebar currentView={currentView} onViewChange={setCurrentView} />
+      <main className="flex-1 overflow-y-auto">{renderView()}</main>
+    </div>
   );
 }
 

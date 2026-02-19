@@ -11,6 +11,7 @@ import StatCard from "../components/StatCard";
 import CategorySpendingChart from "../components/CategorySpendingChart";
 import Calendar from "../components/Calendar";
 import QuickAddBar from "../components/QuickAddBar";
+import NetWorthCard from "../components/NetWorthCard";
 import type { AccountWithBalance } from "../types/account";
 import type { TransactionWithDetails } from "../types/transaction";
 
@@ -59,8 +60,7 @@ export default function DashboardView() {
       let prevEndDate: string;
 
       switch (comparisonMode) {
-        case "month":
-          // Previous month
+        case "month": {
           const prevFirstDay = new Date(
             now.getFullYear(),
             now.getMonth() - 1,
@@ -70,9 +70,8 @@ export default function DashboardView() {
           prevStartDate = prevFirstDay.toISOString().split("T")[0];
           prevEndDate = prevLastDay.toISOString().split("T")[0];
           break;
-
-        case "year":
-          // Same month last year
+        }
+        case "year": {
           const prevYearFirstDay = new Date(
             now.getFullYear() - 1,
             now.getMonth(),
@@ -86,9 +85,8 @@ export default function DashboardView() {
           prevStartDate = prevYearFirstDay.toISOString().split("T")[0];
           prevEndDate = prevYearLastDay.toISOString().split("T")[0];
           break;
-
-        case "quarter":
-          // Previous quarter (3 months ago)
+        }
+        case "quarter": {
           const prevQuarterFirstDay = new Date(
             now.getFullYear(),
             now.getMonth() - 3,
@@ -102,6 +100,7 @@ export default function DashboardView() {
           prevStartDate = prevQuarterFirstDay.toISOString().split("T")[0];
           prevEndDate = prevQuarterLastDay.toISOString().split("T")[0];
           break;
+        }
       }
 
       const [accountsData, summaryData, prevSummaryData, transactionsData] =
@@ -133,9 +132,10 @@ export default function DashboardView() {
     loadDashboardData();
   }, [loadDashboardData]);
 
-  // Callback when QuickAddBar saves a transaction — refresh dashboard data
   const handleTransactionAdded = useCallback(() => {
     loadDashboardData();
+    // Also refresh NetWorthCard
+    window.dispatchEvent(new CustomEvent("refresh-net-worth"));
   }, [loadDashboardData]);
 
   const totalBalance = accounts.reduce(
@@ -143,7 +143,6 @@ export default function DashboardView() {
     0,
   );
 
-  // Calculate percentage changes
   const incomeChange =
     summary && prevSummary && prevSummary.total_income > 0
       ? ((summary.total_income - prevSummary.total_income) /
@@ -158,7 +157,6 @@ export default function DashboardView() {
         100
       : 0;
 
-  // Get comparison label
   const getComparisonLabel = () => {
     switch (comparisonMode) {
       case "month":
@@ -219,6 +217,9 @@ export default function DashboardView() {
 
       {/* Quick Add Bar */}
       <QuickAddBar onTransactionAdded={handleTransactionAdded} />
+
+      {/* Net Worth Card */}
+      <NetWorthCard />
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
@@ -323,9 +324,7 @@ export default function DashboardView() {
       {/* Tab Content */}
       {activeTab === "overview" ? (
         <>
-          {/* Two Column Layout */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-            {/* Category Spending Chart */}
             <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8">
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">
                 Spending by Category
@@ -336,8 +335,6 @@ export default function DashboardView() {
                 transactionType="EXPENSE"
               />
             </div>
-
-            {/* Income Sources Chart */}
             <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8">
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">
                 Income Sources
@@ -350,7 +347,6 @@ export default function DashboardView() {
             </div>
           </div>
 
-          {/* Recent Transactions */}
           <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
@@ -431,7 +427,6 @@ export default function DashboardView() {
           </div>
         </>
       ) : (
-        /* Calendar View */
         <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8">
           <Calendar />
         </div>

@@ -130,6 +130,9 @@ pub fn run() {
             commands::analytics::get_subcategory_breakdown,
             commands::analytics::get_year_over_year_comparison,
             commands::analytics::get_analytics_dashboard,
+            // Net Worth commands
+            commands::networth::get_current_net_worth,
+            commands::networth::get_net_worth_snapshots,
             // Currency commands
             commands::currencies::get_supported_currencies,
             commands::currencies::get_primary_currency,

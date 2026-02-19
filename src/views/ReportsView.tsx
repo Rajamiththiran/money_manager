@@ -6,6 +6,7 @@ import {
   TableCellsIcon,
   ArrowsRightLeftIcon,
   BanknotesIcon,
+  ScaleIcon,
 } from "@heroicons/react/24/outline";
 import ReportFilters from "../components/ReportFilters";
 import TrendChart from "../components/TrendChart";
@@ -14,6 +15,7 @@ import ReportTable from "../components/ReportTable";
 import ExportMenu from "../components/ExportMenu";
 import CategorySpendingChart from "../components/CategorySpendingChart";
 import AccountActivityCard from "../components/AccountActivityCard";
+import NetWorthChart from "../components/NetWorthChart";
 import type {
   ReportFilters as ReportFiltersType,
   MonthlyTrend,
@@ -25,6 +27,7 @@ import type { AccountWithBalance } from "../types/account";
 type ReportTab =
   | "overview"
   | "trends"
+  | "net-worth"
   | "categories"
   | "accounts"
   | "transactions";
@@ -75,7 +78,6 @@ export default function ReportsView() {
       setTransactions(transactionsData);
       setAccounts(accountsData);
 
-      // Load comparison separately
       const comparisonData = await loadComparison();
       setComparison(comparisonData);
     } catch (error) {
@@ -87,11 +89,9 @@ export default function ReportsView() {
 
   const loadComparison = async (): Promise<PeriodComparison | null> => {
     try {
-      // Current period
       const currentStart = filters.startDate;
       const currentEnd = filters.endDate;
 
-      // Previous period (same duration, shifted back)
       const startDate = new Date(filters.startDate);
       const endDate = new Date(filters.endDate);
       const duration = endDate.getTime() - startDate.getTime();
@@ -163,7 +163,6 @@ export default function ReportsView() {
     setFilters(newFilters);
   };
 
-  // Convert ReportFilters to ExportFilter format
   const getExportFilters = () => ({
     start_date: filters.startDate,
     end_date: filters.endDate,
@@ -175,6 +174,7 @@ export default function ReportsView() {
   const tabs = [
     { id: "overview" as ReportTab, label: "Overview", icon: ChartBarIcon },
     { id: "trends" as ReportTab, label: "Trends", icon: ArrowsRightLeftIcon },
+    { id: "net-worth" as ReportTab, label: "Net Worth", icon: ScaleIcon },
     { id: "categories" as ReportTab, label: "Categories", icon: ChartBarIcon },
     { id: "accounts" as ReportTab, label: "Accounts", icon: BanknotesIcon },
     {
@@ -223,7 +223,7 @@ export default function ReportsView() {
       </div>
 
       {/* Tab Content */}
-      {loading ? (
+      {loading && activeTab !== "net-worth" ? (
         <div className="flex items-center justify-center h-96">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
         </div>
@@ -232,10 +232,8 @@ export default function ReportsView() {
           {/* Overview Tab */}
           {activeTab === "overview" && (
             <div className="space-y-8">
-              {/* Period Comparison */}
               {comparison && <ComparisonCard comparison={comparison} />}
 
-              {/* Quick Stats Grid */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
                   <p className="text-sm text-gray-600 dark:text-gray-400">
@@ -267,7 +265,7 @@ export default function ReportsView() {
                   </p>
                   <p
                     className={`text-2xl font-bold mt-1 ${
-                      (comparison?.currentPeriod.netSavings || 0) >= 0
+                      (comparison?.currentPeriod.netSavings ?? 0) >= 0
                         ? "text-blue-600 dark:text-blue-400"
                         : "text-orange-600 dark:text-orange-400"
                     }`}
@@ -289,7 +287,6 @@ export default function ReportsView() {
                 </div>
               </div>
 
-              {/* Charts Row */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                 <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
                   <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
@@ -325,7 +322,6 @@ export default function ReportsView() {
                 <TrendChart data={trends} />
               </div>
 
-              {/* Monthly Summary Table */}
               <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
                   Monthly Summary
@@ -408,6 +404,16 @@ export default function ReportsView() {
                   </table>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Net Worth Tab */}
+          {activeTab === "net-worth" && (
+            <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+                Net Worth Over Time
+              </h3>
+              <NetWorthChart />
             </div>
           )}
 

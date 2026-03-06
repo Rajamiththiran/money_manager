@@ -1,3 +1,4 @@
+/* File: src/index.css */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -20,6 +21,13 @@
     --accent-bg900-20: 30 58 138;
   }
 
+  /* ✅ FIX: prevent OS-level scrollbars on the window itself */
+  html,
+  body {
+    height: 100%;
+    overflow: hidden;
+  }
+
   body {
     @apply bg-white dark:bg-gray-900 text-gray-900 dark:text-white;
     font-family:
@@ -29,7 +37,9 @@
   }
 
   #root {
-    @apply w-full h-screen;
+    /* ✅ FIX: h-full inherits from html/body instead of using 100vh
+       which can misfire at non-100% OS display scale (125%, 150%) */
+    @apply w-full h-full overflow-hidden;
   }
 }
 

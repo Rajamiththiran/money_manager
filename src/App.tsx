@@ -83,7 +83,7 @@ function AppContent() {
       if (elapsed >= timeoutMs) {
         setIsLocked(true);
       }
-    }, 5000); // Check every 5 seconds
+    }, 5000);
 
     return () => {
       if (lockTimerRef.current) {
@@ -97,7 +97,6 @@ function AppContent() {
     if (!pinEnabled || lockTimeout === 0) return;
 
     const handleBlur = () => {
-      // Only lock on blur if timeout is short (1 min or less)
       if (lockTimeout <= 1) {
         setIsLocked(true);
       }
@@ -191,9 +190,11 @@ function AppContent() {
   }
 
   return (
-    <div className="flex h-screen bg-gray-50 dark:bg-gray-900">
+    // ✅ FIX 1: overflow-hidden prevents double scrollbars at the window level
+    <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-gray-900">
       <Sidebar currentView={currentView} onViewChange={setCurrentView} />
-      <main className="flex-1 overflow-y-auto">{renderView()}</main>
+      {/* ✅ FIX 2: min-w-0 prevents flex child overflowing when sidebar is wide */}
+      <main className="flex-1 min-w-0 overflow-y-auto">{renderView()}</main>
     </div>
   );
 }

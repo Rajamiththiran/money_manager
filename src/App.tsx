@@ -10,6 +10,7 @@ import DashboardView from "./views/DashboardView";
 import AccountsView from "./views/AccountsView";
 import CategoriesView from "./views/CategoriesView";
 import TransactionsView from "./views/TransactionsView";
+import ReceiptsView from "./views/ReceiptsView";
 import BudgetView from "./views/BudgetView";
 import CreditCardsView from "./views/CreditCardsView";
 import AdvancedView from "./views/AdvancedView";
@@ -159,6 +160,8 @@ function AppContent() {
         return <CategoriesView />;
       case "transactions":
         return <TransactionsView />;
+      case "receipts":
+        return <ReceiptsView />;
       case "budgets":
         return <BudgetView />;
       case "credit-cards":

@@ -184,10 +184,10 @@ export default function TransactionModal({
             />
           </div>
 
-          {/* Receipt Photo */}
+          {/* Receipt Photos */}
           <PhotoAttachment
             transactionId={transaction.id}
-            photoPath={transaction.photo_path}
+            photoCount={transaction.photo_count}
           />
 
           <div className="flex gap-3 pt-4">

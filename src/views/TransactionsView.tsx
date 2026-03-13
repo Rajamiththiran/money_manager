@@ -8,6 +8,7 @@ import TransactionList from "../components/TransactionList";
 import TransactionModal from "../components/TransactionModal";
 import TransactionFilterBar from "../components/TransactionFilterBar";
 import ConfirmDialog from "../components/ConfirmDialog";
+import ReceiptViewerModal from "../components/ReceiptViewerModal";
 import type {
   TransactionWithDetails,
   TransactionFilter,
@@ -54,6 +55,10 @@ export default function TransactionsView() {
     open: boolean;
     transactionId: number | null;
   }>({ open: false, transactionId: null });
+
+  // Receipt viewer state
+  const [receiptTransaction, setReceiptTransaction] =
+    useState<TransactionWithDetails | null>(null);
 
   useEffect(() => {
     loadReferenceData();
@@ -115,7 +120,7 @@ export default function TransactionsView() {
 
   const handleCreate = async (
     input: CreateTransactionInput,
-    pendingPhotoPath?: string | null,
+    pendingPhotoPaths?: string[],
   ) => {
     setError(null);
     try {
@@ -124,16 +129,18 @@ export default function TransactionsView() {
         input,
       });
 
-      // If a photo was selected, attach it to the newly created transaction
-      if (pendingPhotoPath) {
-        try {
-          await invoke("attach_photo", {
-            transactionId,
-            sourcePath: pendingPhotoPath,
-          });
-        } catch (photoErr) {
-          // Transaction was created successfully, but photo failed — don't roll back
-          console.error("Failed to attach photo:", photoErr);
+      // If photos were selected, attach them to the newly created transaction
+      if (pendingPhotoPaths && pendingPhotoPaths.length > 0) {
+        for (const sourcePath of pendingPhotoPaths) {
+          try {
+            await invoke("attach_photo", {
+              transactionId,
+              sourcePath,
+            });
+          } catch (photoErr) {
+            // Transaction was created successfully, but photo failed — don't roll back
+            console.error("Failed to attach photo:", photoErr);
+          }
         }
       }
 
@@ -279,6 +286,7 @@ export default function TransactionsView() {
           onEdit={handleEdit}
           onDelete={handleDeleteRequest}
           onDuplicate={handleDuplicate}
+          onViewReceipts={(txn) => setReceiptTransaction(txn)}
         />
       )}
 
@@ -303,6 +311,14 @@ export default function TransactionsView() {
         onConfirm={handleDeleteConfirm}
         onCancel={() => setDeleteConfirm({ open: false, transactionId: null })}
       />
+
+      {/* Receipt Viewer */}
+      {receiptTransaction && (
+        <ReceiptViewerModal
+          transaction={receiptTransaction}
+          onClose={() => setReceiptTransaction(null)}
+        />
+      )}
     </div>
   );
 }

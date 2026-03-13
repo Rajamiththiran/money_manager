@@ -14,7 +14,7 @@ interface TransactionFormProps {
   categories: CategoryWithChildren[];
   onSubmit: (
     input: CreateTransactionInput,
-    pendingPhotoPath?: string | null,
+    pendingPhotoPaths?: string[],
   ) => Promise<void>;
   onCancel: () => void;
   prefillData?: {
@@ -46,7 +46,7 @@ export default function TransactionForm({
     category_id: 0,
     memo: "",
   });
-  const [pendingPhotoPath, setPendingPhotoPath] = useState<string | null>(null);
+  const [pendingPhotoPaths, setPendingPhotoPaths] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showCalculator, setShowCalculator] = useState(false);
@@ -80,7 +80,7 @@ export default function TransactionForm({
         memo: "",
       });
     }
-    setPendingPhotoPath(null);
+    setPendingPhotoPaths([]);
   }, [prefillData, accounts]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -116,7 +116,7 @@ export default function TransactionForm({
         throw new Error("Please select a category");
       }
 
-      await onSubmit(input, pendingPhotoPath);
+      await onSubmit(input, pendingPhotoPaths.length > 0 ? pendingPhotoPaths : undefined);
 
       // Reset form
       setFormData({
@@ -127,7 +127,7 @@ export default function TransactionForm({
         category_id: 0,
         memo: "",
       });
-      setPendingPhotoPath(null);
+      setPendingPhotoPaths([]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -319,10 +319,10 @@ export default function TransactionForm({
           />
         </div>
 
-        {/* Receipt Photo */}
+        {/* Receipt Photos */}
         <PhotoPicker
-          selectedPath={pendingPhotoPath}
-          onSelect={setPendingPhotoPath}
+          selectedPaths={pendingPhotoPaths}
+          onSelect={setPendingPhotoPaths}
         />
 
         {/* Actions */}

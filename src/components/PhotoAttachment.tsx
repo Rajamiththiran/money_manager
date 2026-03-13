@@ -2,27 +2,28 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Camera, X, Loader2, Maximize2, Trash2, ImageOff } from "lucide-react";
+import { Camera, X, Loader2, Maximize2, Trash2, ImageOff, Plus } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import Button from "./Button";
+import type { PhotoInfo } from "../types/transaction";
 
 interface PhotoAttachmentProps {
   transactionId: number;
-  photoPath: string | null;
+  photoCount: number;
   onPhotoChange?: () => void;
   compact?: boolean;
 }
 
 /**
  * Standalone photo picker for use in the create form (before a transaction exists).
- * Returns the selected file path without uploading to backend.
+ * Returns the selected file paths without uploading to backend.
  */
 interface PhotoPickerProps {
-  selectedPath: string | null;
-  onSelect: (path: string | null) => void;
+  selectedPaths: string[];
+  onSelect: (paths: string[]) => void;
 }
 
-export function PhotoPicker({ selectedPath, onSelect }: PhotoPickerProps) {
+export function PhotoPicker({ selectedPaths, onSelect }: PhotoPickerProps) {
   const [isSelecting, setIsSelecting] = useState(false);
 
   const handleSelect = async () => {
@@ -36,11 +37,12 @@ export function PhotoPicker({ selectedPath, onSelect }: PhotoPickerProps) {
           },
         ],
         title: "Select Receipt Photo",
-        multiple: false,
+        multiple: true,
       });
 
       if (filePath) {
-        onSelect(filePath as string);
+        const paths = Array.isArray(filePath) ? filePath : [filePath];
+        onSelect([...selectedPaths, ...paths]);
       }
     } catch (err) {
       console.error("Failed to open file dialog:", err);
@@ -49,60 +51,72 @@ export function PhotoPicker({ selectedPath, onSelect }: PhotoPickerProps) {
     }
   };
 
-  const handleRemove = () => {
-    onSelect(null);
+  const handleRemove = (index: number) => {
+    const updated = selectedPaths.filter((_, i) => i !== index);
+    onSelect(updated);
   };
-
-  // Extract filename from path for display
-  const fileName = selectedPath
-    ? selectedPath.split(/[/\\]/).pop() || "Selected photo"
-    : null;
 
   return (
     <div className="space-y-2">
       <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-        Receipt Photo
+        Receipt Photos
       </label>
 
-      {selectedPath ? (
-        <div className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-700/50">
-          <Camera className="w-5 h-5 text-emerald-500 flex-shrink-0" />
-          <span className="text-sm text-gray-700 dark:text-gray-300 truncate flex-1">
-            {fileName}
-          </span>
-          <button
-            type="button"
-            onClick={handleRemove}
-            className="p-1 text-gray-400 hover:text-red-500 transition-colors flex-shrink-0"
-            title="Remove photo"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={handleSelect}
-          disabled={isSelecting}
-          className="w-full h-24 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500 hover:bg-blue-50/50 dark:hover:bg-blue-900/10 transition-all flex flex-col items-center justify-center gap-1.5 disabled:opacity-50"
-        >
-          {isSelecting ? (
-            <Loader2 className="w-6 h-6 text-blue-400 animate-spin" />
-          ) : (
-            <>
-              <div className="p-1.5 rounded-full bg-gray-100 dark:bg-gray-700">
-                <Camera className="w-4 h-4 text-gray-400" />
+      {selectedPaths.length > 0 && (
+        <div className="space-y-2">
+          {selectedPaths.map((path, index) => {
+            const fileName = path.split(/[/\\]/).pop() || "Selected photo";
+            return (
+              <div
+                key={index}
+                className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-700/50"
+              >
+                <Camera className="w-5 h-5 text-emerald-500 flex-shrink-0" />
+                <span className="text-sm text-gray-700 dark:text-gray-300 truncate flex-1">
+                  {fileName}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleRemove(index)}
+                  className="p-1 text-gray-400 hover:text-red-500 transition-colors flex-shrink-0"
+                  title="Remove photo"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
-              <span className="text-xs text-gray-500 dark:text-gray-400">
-                Click to attach a receipt photo
-              </span>
-              <span className="text-xs text-gray-400 dark:text-gray-500">
-                JPG, PNG, WebP • Auto-compressed
-              </span>
-            </>
-          )}
-        </button>
+            );
+          })}
+        </div>
       )}
+
+      <button
+        type="button"
+        onClick={handleSelect}
+        disabled={isSelecting}
+        className="w-full h-24 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500 hover:bg-blue-50/50 dark:hover:bg-blue-900/10 transition-all flex flex-col items-center justify-center gap-1.5 disabled:opacity-50"
+      >
+        {isSelecting ? (
+          <Loader2 className="w-6 h-6 text-blue-400 animate-spin" />
+        ) : (
+          <>
+            <div className="p-1.5 rounded-full bg-gray-100 dark:bg-gray-700">
+              {selectedPaths.length > 0 ? (
+                <Plus className="w-4 h-4 text-gray-400" />
+              ) : (
+                <Camera className="w-4 h-4 text-gray-400" />
+              )}
+            </div>
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              {selectedPaths.length > 0
+                ? "Click to add more photos"
+                : "Click to attach receipt photos"}
+            </span>
+            <span className="text-xs text-gray-400 dark:text-gray-500">
+              JPG, PNG, WebP • Auto-compressed
+            </span>
+          </>
+        )}
+      </button>
     </div>
   );
 }
@@ -111,42 +125,36 @@ export function PhotoPicker({ selectedPath, onSelect }: PhotoPickerProps) {
 
 export default function PhotoAttachment({
   transactionId,
-  photoPath,
+  photoCount,
   onPhotoChange,
   compact = false,
 }: PhotoAttachmentProps) {
-  const [fullPath, setFullPath] = useState<string | null>(null);
+  const [photos, setPhotos] = useState<PhotoInfo[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [isRemoving, setIsRemoving] = useState(false);
-  const [showPreview, setShowPreview] = useState(false);
+  const [removingId, setRemovingId] = useState<number | null>(null);
+  const [previewPhoto, setPreviewPhoto] = useState<PhotoInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [imgBroken, setImgBroken] = useState(false);
+  const [brokenImages, setBrokenImages] = useState<Set<number>>(new Set());
 
-  // Load photo path on mount or when photoPath changes
+  // Load photos on mount or when photoCount changes
   useEffect(() => {
-    if (photoPath) {
-      loadPhotoPath();
-    } else {
-      setFullPath(null);
+    if (photoCount > 0 || photos.length > 0) {
+      loadPhotos();
     }
-  }, [photoPath, transactionId]);
+  }, [transactionId, photoCount]);
 
-  // Reset broken state when fullPath changes
-  useEffect(() => {
-    setImgBroken(false);
-  }, [fullPath]);
-
-  const loadPhotoPath = async () => {
+  const loadPhotos = async () => {
     setIsLoading(true);
     try {
-      const path = await invoke<string | null>("get_photo_path", {
+      const result = await invoke<PhotoInfo[]>("get_transaction_photos", {
         transactionId,
       });
-      setFullPath(path);
+      setPhotos(result);
+      setBrokenImages(new Set());
     } catch (err) {
-      console.error("Failed to load photo:", err);
-      setFullPath(null);
+      console.error("Failed to load photos:", err);
+      setPhotos([]);
     } finally {
       setIsLoading(false);
     }
@@ -164,7 +172,7 @@ export default function PhotoAttachment({
           },
         ],
         title: "Select Receipt Photo",
-        multiple: false,
+        multiple: true,
       });
 
       if (!filePath) {
@@ -172,13 +180,16 @@ export default function PhotoAttachment({
         return;
       }
 
-      const resultPath = await invoke<string>("attach_photo", {
-        transactionId,
-        sourcePath: filePath as string,
-      });
+      const paths = Array.isArray(filePath) ? filePath : [filePath];
 
-      setFullPath(resultPath);
-      setImgBroken(false);
+      for (const path of paths) {
+        await invoke<PhotoInfo>("attach_photo", {
+          transactionId,
+          sourcePath: path,
+        });
+      }
+
+      await loadPhotos();
       onPhotoChange?.();
     } catch (err) {
       setError(String(err));
@@ -187,26 +198,28 @@ export default function PhotoAttachment({
     }
   };
 
-  const handleRemove = async () => {
+  const handleRemove = async (photoId: number) => {
     setError(null);
-    setIsRemoving(true);
+    setRemovingId(photoId);
     try {
-      await invoke("remove_photo", { transactionId });
-      setFullPath(null);
-      setShowPreview(false);
-      setImgBroken(false);
+      await invoke("remove_photo", { photoId });
+      setPhotos((prev) => prev.filter((p) => p.id !== photoId));
+      if (previewPhoto?.id === photoId) {
+        setPreviewPhoto(null);
+      }
       onPhotoChange?.();
     } catch (err) {
       setError(String(err));
     } finally {
-      setIsRemoving(false);
+      setRemovingId(null);
     }
   };
 
-  // Convert file path to asset URL for display
-  const imageUrl = fullPath ? convertFileSrc(fullPath) : null;
+  const markBroken = (photoId: number) => {
+    setBrokenImages((prev) => new Set(prev).add(photoId));
+  };
 
-  // Compact mode: just a small icon/thumbnail
+  // Compact mode: show small thumbnail(s)
   if (compact) {
     if (isLoading) {
       return (
@@ -216,55 +229,66 @@ export default function PhotoAttachment({
       );
     }
 
-    if (fullPath && imageUrl) {
-      if (imgBroken) {
-        return (
-          <button
-            onClick={() => setShowPreview(true)}
-            className="w-8 h-8 rounded-md flex items-center justify-center border border-gray-200 dark:border-gray-600 bg-gray-100 dark:bg-gray-700"
-            title="Receipt (image unavailable)"
-          >
-            <ImageOff className="w-4 h-4 text-gray-400" />
-          </button>
-        );
-      }
+    if (photos.length === 0) return null;
 
-      return (
-        <>
-          <button
-            onClick={() => setShowPreview(true)}
-            className="w-8 h-8 rounded-md overflow-hidden border border-gray-200 dark:border-gray-600 hover:ring-2 hover:ring-blue-400 transition-all flex-shrink-0"
-            title="View receipt"
-          >
-            <img
-              src={imageUrl}
-              alt="Receipt"
-              className="w-full h-full object-cover"
-              onError={() => setImgBroken(true)}
-            />
-          </button>
-
-          {/* Preview Modal */}
-          {showPreview && (
-            <PhotoPreviewModal
-              imageUrl={imageUrl}
-              onClose={() => setShowPreview(false)}
-              onRemove={handleRemove}
-              isRemoving={isRemoving}
-            />
+    return (
+      <>
+        <div className="flex items-center gap-1">
+          {photos.slice(0, 3).map((photo) => {
+            const imageUrl = convertFileSrc(photo.full_path);
+            if (brokenImages.has(photo.id)) {
+              return (
+                <button
+                  key={photo.id}
+                  onClick={() => setPreviewPhoto(photo)}
+                  className="w-8 h-8 rounded-md flex items-center justify-center border border-gray-200 dark:border-gray-600 bg-gray-100 dark:bg-gray-700"
+                  title="Receipt (image unavailable)"
+                >
+                  <ImageOff className="w-4 h-4 text-gray-400" />
+                </button>
+              );
+            }
+            return (
+              <button
+                key={photo.id}
+                onClick={() => setPreviewPhoto(photo)}
+                className="w-8 h-8 rounded-md overflow-hidden border border-gray-200 dark:border-gray-600 hover:ring-2 hover:ring-blue-400 transition-all flex-shrink-0"
+                title="View receipt"
+              >
+                <img
+                  src={imageUrl}
+                  alt="Receipt"
+                  className="w-full h-full object-cover"
+                  onError={() => markBroken(photo.id)}
+                />
+              </button>
+            );
+          })}
+          {photos.length > 3 && (
+            <span className="text-xs text-gray-500 dark:text-gray-400 ml-1">
+              +{photos.length - 3}
+            </span>
           )}
-        </>
-      );
-    }
+        </div>
 
-    return null; // No photo, no compact indicator
+        {/* Preview Modal */}
+        {previewPhoto && (
+          <PhotoPreviewModal
+            imageUrl={convertFileSrc(previewPhoto.full_path)}
+            onClose={() => setPreviewPhoto(null)}
+            onRemove={() => handleRemove(previewPhoto.id)}
+            isRemoving={removingId === previewPhoto.id}
+          />
+        )}
+      </>
+    );
   }
 
-  // Full mode: upload area + preview
+  // Full mode: upload area + thumbnails grid
   return (
     <div className="space-y-2">
       <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-        Receipt Photo
+        Receipt Photos
       </label>
 
       {error && <p className="text-xs text-red-500">{error}</p>}
@@ -273,113 +297,107 @@ export default function PhotoAttachment({
         <div className="flex items-center justify-center h-32 rounded-lg border-2 border-dashed border-gray-200 dark:border-gray-600">
           <Loader2 className="w-6 h-6 text-gray-400 animate-spin" />
         </div>
-      ) : fullPath && imageUrl && !imgBroken ? (
-        /* Photo exists — show thumbnail */
-        <div className="relative group">
+      ) : (
+        <>
+          {/* Photo thumbnails grid */}
+          {photos.length > 0 && (
+            <div className="grid grid-cols-3 gap-2">
+              {photos.map((photo) => {
+                const imageUrl = convertFileSrc(photo.full_path);
+                const isBroken = brokenImages.has(photo.id);
+
+                return (
+                  <div key={photo.id} className="relative group">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewPhoto(photo)}
+                      className="w-full aspect-square rounded-lg overflow-hidden border border-gray-200 dark:border-gray-600 hover:ring-2 hover:ring-blue-400 transition-all"
+                    >
+                      {isBroken ? (
+                        <div className="w-full h-full flex items-center justify-center bg-gray-100 dark:bg-gray-700">
+                          <ImageOff className="w-8 h-8 text-gray-400" />
+                        </div>
+                      ) : (
+                        <img
+                          src={imageUrl}
+                          alt="Receipt"
+                          className="w-full h-full object-cover"
+                          onError={() => markBroken(photo.id)}
+                        />
+                      )}
+                    </button>
+
+                    {/* Overlay actions */}
+                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors rounded-lg flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100">
+                      <button
+                        type="button"
+                        onClick={() => setPreviewPhoto(photo)}
+                        className="p-1.5 bg-white/90 dark:bg-gray-800/90 rounded-lg hover:bg-white dark:hover:bg-gray-700 transition-colors"
+                        title="View full size"
+                      >
+                        <Maximize2 className="w-3 h-3 text-gray-700 dark:text-gray-300" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRemove(photo.id)}
+                        disabled={removingId === photo.id}
+                        className="p-1.5 bg-red-500/90 rounded-lg hover:bg-red-600 transition-colors disabled:opacity-50"
+                        title="Remove photo"
+                      >
+                        {removingId === photo.id ? (
+                          <Loader2 className="w-3 h-3 text-white animate-spin" />
+                        ) : (
+                          <Trash2 className="w-3 h-3 text-white" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Upload button */}
           <button
             type="button"
-            onClick={() => setShowPreview(true)}
-            className="w-full h-40 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-600 hover:ring-2 hover:ring-blue-400 transition-all"
+            onClick={handleAttach}
+            disabled={isUploading}
+            className="w-full h-20 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500 hover:bg-blue-50/50 dark:hover:bg-blue-900/10 transition-all flex flex-col items-center justify-center gap-1.5 disabled:opacity-50"
           >
-            <img
-              src={imageUrl}
-              alt="Receipt"
-              className="w-full h-full object-cover"
-              onError={() => setImgBroken(true)}
-            />
+            {isUploading ? (
+              <>
+                <Loader2 className="w-6 h-6 text-blue-400 animate-spin" />
+                <span className="text-xs text-gray-500 dark:text-gray-400">
+                  Compressing...
+                </span>
+              </>
+            ) : (
+              <>
+                <div className="p-1.5 rounded-full bg-gray-100 dark:bg-gray-700">
+                  {photos.length > 0 ? (
+                    <Plus className="w-4 h-4 text-gray-400" />
+                  ) : (
+                    <Camera className="w-4 h-4 text-gray-400" />
+                  )}
+                </div>
+                <span className="text-xs text-gray-500 dark:text-gray-400">
+                  {photos.length > 0
+                    ? "Add more receipt photos"
+                    : "Click to attach receipt photos"}
+                </span>
+              </>
+            )}
           </button>
-
-          {/* Overlay actions */}
-          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors rounded-lg flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
-            <button
-              type="button"
-              onClick={() => setShowPreview(true)}
-              className="p-2 bg-white/90 dark:bg-gray-800/90 rounded-lg hover:bg-white dark:hover:bg-gray-700 transition-colors"
-              title="View full size"
-            >
-              <Maximize2 className="w-4 h-4 text-gray-700 dark:text-gray-300" />
-            </button>
-            <button
-              type="button"
-              onClick={handleRemove}
-              disabled={isRemoving}
-              className="p-2 bg-red-500/90 rounded-lg hover:bg-red-600 transition-colors disabled:opacity-50"
-              title="Remove photo"
-            >
-              {isRemoving ? (
-                <Loader2 className="w-4 h-4 text-white animate-spin" />
-              ) : (
-                <Trash2 className="w-4 h-4 text-white" />
-              )}
-            </button>
-          </div>
-        </div>
-      ) : fullPath && imgBroken ? (
-        /* Photo exists but image is broken — show fallback with re-upload option */
-        <div className="flex flex-col items-center gap-2 p-4 rounded-lg border-2 border-dashed border-amber-300 dark:border-amber-600 bg-amber-50/50 dark:bg-amber-900/10">
-          <ImageOff className="w-8 h-8 text-amber-400" />
-          <span className="text-xs text-amber-600 dark:text-amber-400">
-            Image could not be loaded
-          </span>
-          <div className="flex gap-2">
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              onClick={handleAttach}
-              disabled={isUploading}
-            >
-              Replace
-            </Button>
-            <Button
-              type="button"
-              variant="danger"
-              size="sm"
-              onClick={handleRemove}
-              disabled={isRemoving}
-            >
-              Remove
-            </Button>
-          </div>
-        </div>
-      ) : (
-        /* No photo — show upload area */
-        <button
-          type="button"
-          onClick={handleAttach}
-          disabled={isUploading}
-          className="w-full h-24 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500 hover:bg-blue-50/50 dark:hover:bg-blue-900/10 transition-all flex flex-col items-center justify-center gap-1.5 disabled:opacity-50"
-        >
-          {isUploading ? (
-            <>
-              <Loader2 className="w-6 h-6 text-blue-400 animate-spin" />
-              <span className="text-xs text-gray-500 dark:text-gray-400">
-                Compressing...
-              </span>
-            </>
-          ) : (
-            <>
-              <div className="p-1.5 rounded-full bg-gray-100 dark:bg-gray-700">
-                <Camera className="w-4 h-4 text-gray-400" />
-              </div>
-              <span className="text-xs text-gray-500 dark:text-gray-400">
-                Click to attach a receipt photo
-              </span>
-              <span className="text-xs text-gray-400 dark:text-gray-500">
-                JPG, PNG, WebP • Auto-compressed
-              </span>
-            </>
-          )}
-        </button>
+        </>
       )}
 
       {/* Preview Modal */}
-      {showPreview && imageUrl && (
+      {previewPhoto && (
         <PhotoPreviewModal
-          imageUrl={imageUrl}
-          onClose={() => setShowPreview(false)}
-          onRemove={handleRemove}
-          isRemoving={isRemoving}
+          imageUrl={convertFileSrc(previewPhoto.full_path)}
+          onClose={() => setPreviewPhoto(null)}
+          onRemove={() => handleRemove(previewPhoto.id)}
+          isRemoving={removingId === previewPhoto.id}
         />
       )}
     </div>

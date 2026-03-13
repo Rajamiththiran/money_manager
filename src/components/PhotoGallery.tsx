@@ -8,30 +8,22 @@ import {
   MagnifyingGlassMinusIcon,
 } from "@heroicons/react/24/outline";
 import { Camera } from "lucide-react";
-import type { TransactionWithDetails } from "../types/transaction";
+import type { TransactionWithDetails, PhotoInfo } from "../types/transaction";
 
 interface PhotoGalleryProps {
   transactions: TransactionWithDetails[];
 }
 
-interface PhotoEntry {
-  transactionId: number;
-  photoPath: string;
-  date: string;
-  amount: number;
-  transactionType: string;
-  categoryName: string | null;
-  accountName: string;
-  memo: string | null;
+interface GalleryEntry {
+  photo: PhotoInfo;
+  transaction: TransactionWithDetails;
+  imageUrl: string;
 }
 
 export default function PhotoGallery({ transactions }: PhotoGalleryProps) {
-  const [photos, setPhotos] = useState<PhotoEntry[]>([]);
-  const [resolvedPaths, setResolvedPaths] = useState<Record<number, string>>(
-    {},
-  );
+  const [entries, setEntries] = useState<GalleryEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedPhoto, setSelectedPhoto] = useState<PhotoEntry | null>(null);
+  const [selectedEntry, setSelectedEntry] = useState<GalleryEntry | null>(null);
   const [zoom, setZoom] = useState(1);
 
   useEffect(() => {
@@ -40,44 +32,37 @@ export default function PhotoGallery({ transactions }: PhotoGalleryProps) {
 
   const loadPhotos = async () => {
     setLoading(true);
-    const withPhotos = transactions.filter((t) => t.photo_path);
+    const withPhotos = transactions.filter((t) => t.photo_count > 0);
 
-    const entries: PhotoEntry[] = withPhotos.map((t) => ({
-      transactionId: t.id,
-      photoPath: t.photo_path!,
-      date: t.date,
-      amount: t.amount,
-      transactionType: t.transaction_type,
-      categoryName: t.category_name,
-      accountName: t.account_name,
-      memo: t.memo,
-    }));
-
-    setPhotos(entries);
-
-    // Resolve full paths
-    const paths: Record<number, string> = {};
-    for (const entry of entries) {
+    const allEntries: GalleryEntry[] = [];
+    for (const txn of withPhotos) {
       try {
-        const fullPath = await invoke<string>("get_photo_path", {
-          transactionId: entry.transactionId,
+        const photos = await invoke<PhotoInfo[]>("get_transaction_photos", {
+          transactionId: txn.id,
         });
-        paths[entry.transactionId] = convertFileSrc(fullPath);
+        for (const photo of photos) {
+          allEntries.push({
+            photo,
+            transaction: txn,
+            imageUrl: convertFileSrc(photo.full_path),
+          });
+        }
       } catch {
         // skip unresolvable
       }
     }
-    setResolvedPaths(paths);
+
+    setEntries(allEntries);
     setLoading(false);
   };
 
-  const handleOpenPreview = (photo: PhotoEntry) => {
-    setSelectedPhoto(photo);
+  const handleOpenPreview = (entry: GalleryEntry) => {
+    setSelectedEntry(entry);
     setZoom(1);
   };
 
   const handleClosePreview = () => {
-    setSelectedPhoto(null);
+    setSelectedEntry(null);
     setZoom(1);
   };
 
@@ -95,7 +80,7 @@ export default function PhotoGallery({ transactions }: PhotoGalleryProps) {
     );
   }
 
-  if (photos.length === 0) {
+  if (entries.length === 0) {
     return (
       <div className="text-center py-16">
         <Camera className="w-12 h-12 mx-auto text-gray-300 dark:text-gray-600 mb-4" />
@@ -112,66 +97,57 @@ export default function PhotoGallery({ transactions }: PhotoGalleryProps) {
   return (
     <>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-        {photos.map((photo) => {
-          const src = resolvedPaths[photo.transactionId];
-          return (
-            <div
-              key={photo.transactionId}
-              onClick={() => handleOpenPreview(photo)}
-              className="group cursor-pointer bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden hover:shadow-lg transition-all"
-            >
-              <div className="aspect-square bg-gray-100 dark:bg-gray-700 overflow-hidden">
-                {src ? (
-                  <img
-                    src={src}
-                    alt="Receipt"
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
-                  />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    <Camera className="w-8 h-8 text-gray-300 dark:text-gray-600" />
-                  </div>
-                )}
-              </div>
-              <div className="p-3">
-                <div className="flex items-center justify-between mb-1">
-                  <span
-                    className={`text-xs font-medium px-1.5 py-0.5 rounded ${
-                      photo.transactionType === "INCOME"
-                        ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300"
-                        : photo.transactionType === "EXPENSE"
-                          ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300"
-                          : "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
-                    }`}
-                  >
-                    {photo.transactionType}
-                  </span>
-                  <span className="text-xs text-gray-500 dark:text-gray-400">
-                    {new Date(photo.date).toLocaleDateString()}
-                  </span>
-                </div>
-                <p className="text-sm font-semibold text-gray-900 dark:text-white">
-                  LKR{" "}
-                  {photo.amount.toLocaleString("en-US", {
-                    minimumFractionDigits: 2,
-                  })}
-                </p>
-                <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                  {photo.categoryName || photo.accountName}
-                </p>
-                {photo.memo && (
-                  <p className="text-xs text-gray-400 dark:text-gray-500 truncate mt-0.5">
-                    {photo.memo}
-                  </p>
-                )}
-              </div>
+        {entries.map((entry) => (
+          <div
+            key={entry.photo.id}
+            onClick={() => handleOpenPreview(entry)}
+            className="group cursor-pointer bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden hover:shadow-lg transition-all"
+          >
+            <div className="aspect-square bg-gray-100 dark:bg-gray-700 overflow-hidden">
+              <img
+                src={entry.imageUrl}
+                alt="Receipt"
+                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+              />
             </div>
-          );
-        })}
+            <div className="p-3">
+              <div className="flex items-center justify-between mb-1">
+                <span
+                  className={`text-xs font-medium px-1.5 py-0.5 rounded ${
+                    entry.transaction.transaction_type === "INCOME"
+                      ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300"
+                      : entry.transaction.transaction_type === "EXPENSE"
+                        ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300"
+                        : "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+                  }`}
+                >
+                  {entry.transaction.transaction_type}
+                </span>
+                <span className="text-xs text-gray-500 dark:text-gray-400">
+                  {new Date(entry.transaction.date).toLocaleDateString()}
+                </span>
+              </div>
+              <p className="text-sm font-semibold text-gray-900 dark:text-white">
+                LKR{" "}
+                {entry.transaction.amount.toLocaleString("en-US", {
+                  minimumFractionDigits: 2,
+                })}
+              </p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                {entry.transaction.category_name || entry.transaction.account_name}
+              </p>
+              {entry.transaction.memo && (
+                <p className="text-xs text-gray-400 dark:text-gray-500 truncate mt-0.5">
+                  {entry.transaction.memo}
+                </p>
+              )}
+            </div>
+          </div>
+        ))}
       </div>
 
       {/* ─── Fullscreen Preview ─── */}
-      {selectedPhoto && (
+      {selectedEntry && (
         <div
           className="fixed inset-0 z-[9999] bg-black/90 flex flex-col"
           onClick={handleClosePreview}
@@ -184,14 +160,14 @@ export default function PhotoGallery({ transactions }: PhotoGalleryProps) {
             <div className="text-white">
               <p className="font-semibold">
                 LKR{" "}
-                {selectedPhoto.amount.toLocaleString("en-US", {
+                {selectedEntry.transaction.amount.toLocaleString("en-US", {
                   minimumFractionDigits: 2,
                 })}{" "}
-                — {selectedPhoto.categoryName || selectedPhoto.accountName}
+                — {selectedEntry.transaction.category_name || selectedEntry.transaction.account_name}
               </p>
               <p className="text-sm text-gray-400">
-                {new Date(selectedPhoto.date).toLocaleDateString()} •{" "}
-                {selectedPhoto.memo || "No memo"}
+                {new Date(selectedEntry.transaction.date).toLocaleDateString()} •{" "}
+                {selectedEntry.transaction.memo || "No memo"}
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -226,17 +202,13 @@ export default function PhotoGallery({ transactions }: PhotoGalleryProps) {
             className="flex-1 flex items-center justify-center overflow-auto p-4"
             onClick={(e) => e.stopPropagation()}
           >
-            {resolvedPaths[selectedPhoto.transactionId] ? (
-              <img
-                src={resolvedPaths[selectedPhoto.transactionId]}
-                alt="Receipt"
-                style={{ transform: `scale(${zoom})` }}
-                className="max-w-full max-h-full object-contain transition-transform duration-200 cursor-grab"
-                draggable={false}
-              />
-            ) : (
-              <p className="text-gray-400">Image not available</p>
-            )}
+            <img
+              src={selectedEntry.imageUrl}
+              alt="Receipt"
+              style={{ transform: `scale(${zoom})` }}
+              className="max-w-full max-h-full object-contain transition-transform duration-200 cursor-grab"
+              draggable={false}
+            />
           </div>
         </div>
       )}

@@ -2,6 +2,7 @@
 import { useState, useEffect } from "react";
 import Input from "./Input";
 import Select from "./Select";
+import CascadingCategorySelect from "./CascadingCategorySelect";
 import Button from "./Button";
 import Calculator from "./Calculator";
 import { PhotoPicker } from "./PhotoAttachment";
@@ -145,18 +146,6 @@ export default function TransactionForm({
       ? categories.filter((cat) => cat.category_type === type)
       : [];
 
-  // Flatten categories for dropdown
-  const categoryOptions = [
-    { value: "0", label: "Select Category" },
-    ...filteredCategories.flatMap((parent) => [
-      { value: parent.id.toString(), label: parent.name },
-      ...parent.children.map((child) => ({
-        value: child.id.toString(),
-        label: `  ↳ ${child.name}`,
-      })),
-    ]),
-  ];
-
   const accountOptions = accounts.map((acc) => ({
     value: acc.id.toString(),
     label: `${acc.name} (${acc.current_balance.toFixed(2)} ${acc.currency})`,
@@ -289,16 +278,13 @@ export default function TransactionForm({
                 options={accountOptions}
                 required
               />
-              <Select
+              <CascadingCategorySelect
                 label="Category"
-                value={formData.category_id.toString()}
-                onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    category_id: parseInt(e.target.value),
-                  })
+                categories={filteredCategories}
+                selectedId={formData.category_id}
+                onChange={(categoryId) =>
+                  setFormData({ ...formData, category_id: categoryId })
                 }
-                options={categoryOptions}
                 required
               />
             </>

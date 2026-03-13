@@ -10,6 +10,7 @@ import {
   DocumentChartBarIcon,
   Cog6ToothIcon,
   CreditCardIcon,
+  CameraIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
 } from "@heroicons/react/24/outline";
@@ -26,6 +27,7 @@ const menuItems: { id: View; label: string; icon: React.ElementType }[] = [
   { id: "accounts", label: "Accounts", icon: BuildingLibraryIcon },
   { id: "categories", label: "Categories", icon: FolderIcon },
   { id: "transactions", label: "Transactions", icon: BanknotesIcon },
+  { id: "receipts", label: "Receipts", icon: CameraIcon },
   { id: "budgets", label: "Budgets", icon: ChartPieIcon },
   { id: "credit-cards", label: "Credit Cards", icon: CreditCardIcon },
   { id: "advanced", label: "Advanced", icon: WrenchScrewdriverIcon },

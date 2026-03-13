@@ -44,6 +44,14 @@ export interface TransactionWithDetails {
   account_name: string;
   to_account_name: string | null;
   category_name: string | null;
+  photo_count: number;
+}
+
+export interface PhotoInfo {
+  id: number;
+  transaction_id: number;
+  filename: string;
+  full_path: string;
 }
 
 // ============ NEW: Phase 2 Types ============

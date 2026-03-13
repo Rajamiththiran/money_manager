@@ -158,8 +158,9 @@ pub fn run() {
             // Photo commands
             commands::photos::attach_photo,
             commands::photos::remove_photo,
-            commands::photos::get_photo_path,
+            commands::photos::get_transaction_photos,
             commands::photos::cleanup_orphaned_photos,
+            commands::photos::save_photo_to,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -4,6 +4,7 @@ export type View =
   | "accounts"
   | "categories"
   | "transactions"
+  | "receipts"
   | "budgets"
   | "credit-cards"
   | "advanced"

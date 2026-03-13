@@ -44,7 +44,8 @@ pub async fn get_transactions_with_details(
             t.category_id, t.memo, t.photo_path, t.created_at,
             a.name as account_name,
             ta.name as to_account_name,
-            c.name as category_name
+            c.name as category_name,
+            (SELECT COUNT(*) FROM transaction_photos tp WHERE tp.transaction_id = t.id) as photo_count
          FROM transactions t
          INNER JOIN accounts a ON t.account_id = a.id
          LEFT JOIN accounts ta ON t.to_account_id = ta.id
@@ -73,6 +74,7 @@ pub async fn get_transactions_with_details(
             account_name: row.get("account_name"),
             to_account_name: row.get("to_account_name"),
             category_name: row.get("category_name"),
+            photo_count: row.get("photo_count"),
         })
         .collect())
 }
@@ -317,7 +319,8 @@ pub async fn get_transactions_filtered(
             t.category_id, t.memo, t.photo_path, t.created_at,
             a.name as account_name,
             ta.name as to_account_name,
-            c.name as category_name
+            c.name as category_name,
+            (SELECT COUNT(*) FROM transaction_photos tp WHERE tp.transaction_id = t.id) as photo_count
          FROM transactions t
          INNER JOIN accounts a ON t.account_id = a.id
          LEFT JOIN accounts ta ON t.to_account_id = ta.id
@@ -394,6 +397,7 @@ pub async fn get_transactions_filtered(
             account_name: row.get("account_name"),
             to_account_name: row.get("to_account_name"),
             category_name: row.get("category_name"),
+            photo_count: row.get("photo_count"),
         })
         .collect())
 }
@@ -532,7 +536,8 @@ pub async fn search_transactions(
             t.category_id, t.memo, t.photo_path, t.created_at,
             a.name as account_name,
             ta.name as to_account_name,
-            c.name as category_name
+            c.name as category_name,
+            (SELECT COUNT(*) FROM transaction_photos tp WHERE tp.transaction_id = t.id) as photo_count
          FROM transactions t
          INNER JOIN accounts a ON t.account_id = a.id
          LEFT JOIN accounts ta ON t.to_account_id = ta.id
@@ -565,6 +570,7 @@ pub async fn search_transactions(
             account_name: row.get("account_name"),
             to_account_name: row.get("to_account_name"),
             category_name: row.get("category_name"),
+            photo_count: row.get("photo_count"),
         })
         .collect())
 }

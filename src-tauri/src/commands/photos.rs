@@ -7,17 +7,36 @@ use tauri::State;
 const MAX_WIDTH: u32 = 1200;
 const JPEG_QUALITY: u8 = 80;
 
+// ======================== RESPONSE TYPES ========================
+
+use serde::Serialize;
+
+#[derive(Debug, Serialize)]
+pub struct PhotoInfo {
+    pub id: i64,
+    pub transaction_id: i64,
+    pub filename: String,
+    pub full_path: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CleanupResult {
+    pub files_deleted: i64,
+    pub bytes_freed: i64,
+}
+
 // ======================== ATTACH PHOTO ========================
 
-/// Open a file dialog, copy+compress the selected image into
-/// the app's photos directory, and link it to the transaction.
+/// Copy+compress the selected image into the app's photos directory
+/// and link it to the transaction in the transaction_photos table.
+/// Supports multiple photos per transaction.
 #[tauri::command]
 pub async fn attach_photo(
     app_handle: tauri::AppHandle,
     pool: State<'_, SqlitePool>,
     transaction_id: i64,
     source_path: String,
-) -> Result<String, String> {
+) -> Result<PhotoInfo, String> {
     // 1. Validate transaction exists
     let exists = sqlx::query("SELECT id FROM transactions WHERE id = ?")
         .bind(transaction_id)
@@ -51,7 +70,7 @@ pub async fn attach_photo(
     fs::create_dir_all(&photos_dir)
         .map_err(|e| format!("Failed to create photos directory: {}", e))?;
 
-    // 5. Generate unique filename
+    // 5. Generate unique filename using timestamp
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S_%3f");
     let filename = format!("receipt_{}_{}.jpg", transaction_id, timestamp);
     let dest_path = photos_dir.join(&filename);
@@ -59,126 +78,114 @@ pub async fn attach_photo(
     // 6. Compress and save the image
     compress_and_save(&source_path, &dest_path)?;
 
-    // 7. Store the relative path in DB (just filename, not full path)
-    let relative_path = filename.clone();
+    // 7. Insert into transaction_photos table
+    let result = sqlx::query(
+        "INSERT INTO transaction_photos (transaction_id, filename) VALUES (?, ?)",
+    )
+    .bind(transaction_id)
+    .bind(&filename)
+    .execute(pool.inner())
+    .await
+    .map_err(|e| format!("Failed to save photo record: {}", e))?;
 
-    // Remove old photo if one exists
-    let old_photo = sqlx::query("SELECT photo_path FROM transactions WHERE id = ?")
-        .bind(transaction_id)
-        .fetch_one(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?;
+    let photo_id = result.last_insert_rowid();
 
-    let old_path: Option<String> = old_photo.get("photo_path");
-    if let Some(ref old) = old_path {
-        if !old.is_empty() {
-            let old_full = photos_dir.join(old);
-            let _ = fs::remove_file(old_full); // Best-effort delete
-        }
-    }
-
-    // 8. Update transaction with new photo path
-    sqlx::query("UPDATE transactions SET photo_path = ? WHERE id = ?")
-        .bind(&relative_path)
-        .bind(transaction_id)
-        .execute(pool.inner())
-        .await
-        .map_err(|e| format!("Failed to update photo path: {}", e))?;
-
-    // 9. Return the full absolute path for frontend display
+    // 8. Return the photo info
     let full_path = dest_path
         .to_str()
         .unwrap_or("")
         .to_string();
 
-    Ok(full_path)
+    Ok(PhotoInfo {
+        id: photo_id,
+        transaction_id,
+        filename,
+        full_path,
+    })
 }
 
 // ======================== REMOVE PHOTO ========================
 
-/// Remove the photo attachment from a transaction and delete the file.
+/// Remove a specific photo by its ID from the transaction_photos table
+/// and delete the file from disk.
 #[tauri::command]
 pub async fn remove_photo(
     app_handle: tauri::AppHandle,
     pool: State<'_, SqlitePool>,
-    transaction_id: i64,
+    photo_id: i64,
 ) -> Result<(), String> {
-    // Get current photo path
-    let row = sqlx::query("SELECT photo_path FROM transactions WHERE id = ?")
-        .bind(transaction_id)
+    // Get the photo record
+    let row = sqlx::query("SELECT filename FROM transaction_photos WHERE id = ?")
+        .bind(photo_id)
         .fetch_optional(pool.inner())
         .await
         .map_err(|e| format!("Database error: {}", e))?
-        .ok_or_else(|| format!("Transaction {} not found", transaction_id))?;
+        .ok_or_else(|| format!("Photo {} not found", photo_id))?;
 
-    let photo_path: Option<String> = row.get("photo_path");
+    let filename: String = row.get("filename");
 
-    // Delete the file if it exists
-    if let Some(ref filename) = photo_path {
-        if !filename.is_empty() {
-            let photos_dir = get_photos_dir(&app_handle)?;
-            let full_path = photos_dir.join(filename);
-            if full_path.exists() {
-                fs::remove_file(&full_path)
-                    .map_err(|e| format!("Failed to delete photo file: {}", e))?;
-            }
-        }
+    // Delete the file from disk
+    let photos_dir = get_photos_dir(&app_handle)?;
+    let full_path = photos_dir.join(&filename);
+    if full_path.exists() {
+        fs::remove_file(&full_path)
+            .map_err(|e| format!("Failed to delete photo file: {}", e))?;
     }
 
-    // Clear photo_path in DB
-    sqlx::query("UPDATE transactions SET photo_path = NULL WHERE id = ?")
-        .bind(transaction_id)
+    // Delete the record from DB
+    sqlx::query("DELETE FROM transaction_photos WHERE id = ?")
+        .bind(photo_id)
         .execute(pool.inner())
         .await
-        .map_err(|e| format!("Failed to clear photo path: {}", e))?;
+        .map_err(|e| format!("Failed to delete photo record: {}", e))?;
 
     Ok(())
 }
 
-// ======================== GET PHOTO PATH ========================
+// ======================== GET TRANSACTION PHOTOS ========================
 
-/// Get the full absolute file path for a transaction's photo.
-/// Returns None if no photo is attached.
+/// Get all photos for a given transaction.
+/// Returns a list of PhotoInfo with resolved full paths.
 #[tauri::command]
-pub async fn get_photo_path(
+pub async fn get_transaction_photos(
     app_handle: tauri::AppHandle,
     pool: State<'_, SqlitePool>,
     transaction_id: i64,
-) -> Result<Option<String>, String> {
-    let row = sqlx::query("SELECT photo_path FROM transactions WHERE id = ?")
-        .bind(transaction_id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?;
+) -> Result<Vec<PhotoInfo>, String> {
+    let rows = sqlx::query(
+        "SELECT id, transaction_id, filename FROM transaction_photos WHERE transaction_id = ? ORDER BY created_at ASC",
+    )
+    .bind(transaction_id)
+    .fetch_all(pool.inner())
+    .await
+    .map_err(|e| format!("Database error: {}", e))?;
 
-    match row {
-        Some(r) => {
-            let photo_path: Option<String> = r.get("photo_path");
-            match photo_path {
-                Some(ref filename) if !filename.is_empty() => {
-                    let photos_dir = get_photos_dir(&app_handle)?;
-                    let full_path = photos_dir.join(filename);
-                    if full_path.exists() {
-                        Ok(Some(
-                            full_path.to_str().unwrap_or("").to_string(),
-                        ))
-                    } else {
-                        // File missing on disk, clear the DB reference
-                        sqlx::query(
-                            "UPDATE transactions SET photo_path = NULL WHERE id = ?",
-                        )
-                        .bind(transaction_id)
-                        .execute(pool.inner())
-                        .await
-                        .map_err(|e| format!("Database error: {}", e))?;
-                        Ok(None)
-                    }
-                }
-                _ => Ok(None),
-            }
+    let photos_dir = get_photos_dir(&app_handle)?;
+    let mut photos = Vec::new();
+
+    for row in &rows {
+        let id: i64 = row.get("id");
+        let txn_id: i64 = row.get("transaction_id");
+        let filename: String = row.get("filename");
+        let full_path = photos_dir.join(&filename);
+
+        if full_path.exists() {
+            photos.push(PhotoInfo {
+                id,
+                transaction_id: txn_id,
+                filename,
+                full_path: full_path.to_str().unwrap_or("").to_string(),
+            });
+        } else {
+            // File missing on disk — clean up the DB record
+            let _ = sqlx::query("DELETE FROM transaction_photos WHERE id = ?")
+                .bind(id)
+                .execute(pool.inner())
+                .await;
         }
-        None => Err(format!("Transaction {} not found", transaction_id)),
     }
+
+    Ok(photos)
 }
 
 // ======================== CLEANUP ORPHANS ========================
@@ -199,17 +206,15 @@ pub async fn cleanup_orphaned_photos(
         });
     }
 
-    // Get all photo filenames referenced in the DB
-    let rows = sqlx::query(
-        "SELECT photo_path FROM transactions WHERE photo_path IS NOT NULL AND photo_path != ''",
-    )
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
+    // Get all photo filenames referenced in the DB (new table)
+    let rows = sqlx::query("SELECT filename FROM transaction_photos")
+        .fetch_all(pool.inner())
+        .await
+        .map_err(|e| format!("Database error: {}", e))?;
 
     let referenced: std::collections::HashSet<String> = rows
         .iter()
-        .map(|r| r.get::<String, _>("photo_path"))
+        .map(|r| r.get::<String, _>("filename"))
         .collect();
 
     // Scan the photos directory
@@ -261,6 +266,38 @@ pub async fn cleanup_orphaned_photos(
     })
 }
 
+// ======================== SAVE/DOWNLOAD PHOTO ========================
+
+/// Copy a photo to a user-chosen destination path (Save As).
+#[tauri::command]
+pub async fn save_photo_to(
+    app_handle: tauri::AppHandle,
+    pool: State<'_, SqlitePool>,
+    photo_id: i64,
+    dest_path: String,
+) -> Result<(), String> {
+    // Get the photo record
+    let row = sqlx::query("SELECT filename FROM transaction_photos WHERE id = ?")
+        .bind(photo_id)
+        .fetch_optional(pool.inner())
+        .await
+        .map_err(|e| format!("Database error: {}", e))?
+        .ok_or_else(|| format!("Photo {} not found", photo_id))?;
+
+    let filename: String = row.get("filename");
+    let photos_dir = get_photos_dir(&app_handle)?;
+    let source = photos_dir.join(&filename);
+
+    if !source.exists() {
+        return Err("Photo file not found on disk".to_string());
+    }
+
+    fs::copy(&source, &dest_path)
+        .map_err(|e| format!("Failed to save photo: {}", e))?;
+
+    Ok(())
+}
+
 // ======================== HELPERS ========================
 
 fn get_photos_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -306,14 +343,4 @@ fn compress_and_save(source_path: &str, dest_path: &Path) -> Result<(), String> 
         .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
 
     Ok(())
-}
-
-// ======================== RESPONSE TYPES ========================
-
-use serde::Serialize;
-
-#[derive(Debug, Serialize)]
-pub struct CleanupResult {
-    pub files_deleted: i64,
-    pub bytes_freed: i64,
 }

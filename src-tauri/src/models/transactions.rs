@@ -42,6 +42,7 @@ pub struct TransactionWithDetails {
     pub account_name: String,
     pub to_account_name: Option<String>,
     pub category_name: Option<String>,
+    pub photo_count: i64,
 }
 
 #[derive(Debug, Serialize)]

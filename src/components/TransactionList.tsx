@@ -12,7 +12,6 @@ import {
   ChevronRightIcon,
 } from "@heroicons/react/24/outline";
 import clsx from "clsx";
-import PhotoAttachment from "./PhotoAttachment";
 import type { TransactionWithDetails } from "../types/transaction";
 
 const PAGE_SIZE = 25;
@@ -22,6 +21,7 @@ interface TransactionListProps {
   onEdit: (transaction: TransactionWithDetails) => void;
   onDelete: (id: number) => void;
   onDuplicate: (transaction: TransactionWithDetails) => void;
+  onViewReceipts: (transaction: TransactionWithDetails) => void;
 }
 
 export default function TransactionList({
@@ -29,6 +29,7 @@ export default function TransactionList({
   onEdit,
   onDelete,
   onDuplicate,
+  onViewReceipts,
 }: TransactionListProps) {
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -144,19 +145,22 @@ export default function TransactionList({
                     {txn.amount.toFixed(2)}
                   </td>
                   <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-400 max-w-xs">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate">{txn.memo || "-"}</span>
-                      {txn.photo_path && (
-                        <PhotoAttachment
-                          transactionId={txn.id}
-                          photoPath={txn.photo_path}
-                          compact
-                        />
-                      )}
-                    </div>
+                    <span className="truncate block">{txn.memo || "-"}</span>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
                     <div className="flex items-center justify-end gap-2">
+                      {txn.photo_count > 0 && (
+                        <button
+                          onClick={() => onViewReceipts(txn)}
+                          className="p-2 text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 transition-colors relative"
+                          title="View receipts"
+                        >
+                          <CameraIcon className="h-4 w-4" />
+                          <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] flex items-center justify-center bg-blue-500 text-white text-[9px] font-bold rounded-full leading-none">
+                            {txn.photo_count}
+                          </span>
+                        </button>
+                      )}
                       <button
                         onClick={() => onDuplicate(txn)}
                         className="p-2 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
@@ -204,11 +208,15 @@ export default function TransactionList({
                   <span className="text-sm text-gray-600 dark:text-gray-400">
                     {new Date(txn.date).toLocaleDateString()}
                   </span>
-                  {txn.photo_path && (
-                    <CameraIcon
-                      className="h-4 w-4 text-blue-400"
-                      title="Has receipt"
-                    />
+                  {txn.photo_count > 0 && (
+                    <button
+                      onClick={() => onViewReceipts(txn)}
+                      className="flex items-center gap-1"
+                      title="View receipts"
+                    >
+                      <CameraIcon className="h-4 w-4 text-blue-400" />
+                      <span className="text-xs text-blue-400">{txn.photo_count}</span>
+                    </button>
                   )}
                 </div>
                 <span className="text-lg font-bold text-gray-900 dark:text-white">
@@ -232,6 +240,14 @@ export default function TransactionList({
                 </p>
               )}
               <div className="flex items-center gap-2">
+                {txn.photo_count > 0 && (
+                  <button
+                    onClick={() => onViewReceipts(txn)}
+                    className="flex-1 px-3 py-1 text-sm text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded transition-colors flex items-center justify-center gap-1"
+                  >
+                    <CameraIcon className="h-3.5 w-3.5" /> Receipts
+                  </button>
+                )}
                 <button
                   onClick={() => onDuplicate(txn)}
                   className="flex-1 px-3 py-1 text-sm text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded transition-colors"

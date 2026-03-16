@@ -260,6 +260,7 @@ export default function TransactionsView() {
             categories={categories}
             onSubmit={handleCreate}
             onCancel={handleCancelForm}
+            onCategoryCreated={loadReferenceData}
             prefillData={prefillData}
           />
         </div>

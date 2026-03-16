@@ -4,6 +4,7 @@ import { XMarkIcon } from "@heroicons/react/24/outline";
 import Button from "./Button";
 import Input from "./Input";
 import Select from "./Select";
+import CascadingCategorySelect from "./CascadingCategorySelect";
 import type {
   BudgetStatus,
   CreateBudgetInput,
@@ -82,21 +83,10 @@ export default function BudgetForm({
     }
   };
 
-  // Flatten categories for dropdown (only EXPENSE categories)
+  // Filter categories for dropdown (only EXPENSE categories)
   const expenseCategories = categories.filter(
     (cat) => cat.category_type === "EXPENSE",
   );
-
-  const categoryOptions = [
-    { value: "0", label: "Select Category" },
-    ...expenseCategories.flatMap((parent) => [
-      { value: parent.id.toString(), label: parent.name },
-      ...parent.children.map((child) => ({
-        value: child.id.toString(),
-        label: `  ↳ ${child.name}`,
-      })),
-    ]),
-  ];
 
   const periodOptions = [
     { value: "MONTHLY", label: "Monthly" },
@@ -128,16 +118,11 @@ export default function BudgetForm({
           )}
 
           {!budget && (
-            <Select
+            <CascadingCategorySelect
               label="Category"
-              value={formData.category_id.toString()}
-              onChange={(e) =>
-                setFormData({
-                  ...formData,
-                  category_id: parseInt(e.target.value),
-                })
-              }
-              options={categoryOptions}
+              categories={expenseCategories}
+              selectedId={formData.category_id}
+              onChange={(id) => setFormData({ ...formData, category_id: id })}
               required
             />
           )}

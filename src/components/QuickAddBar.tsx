@@ -305,7 +305,7 @@ export default function QuickAddBar({ onTransactionAdded }: QuickAddBarProps) {
     <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4 mb-6">
       <form onSubmit={handleSubmit} onKeyDown={handleKeyDown}>
         {/* Main row */}
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           {/* Type toggle pills */}
           <div className="flex rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden flex-shrink-0">
             <button
@@ -350,7 +350,7 @@ export default function QuickAddBar({ onTransactionAdded }: QuickAddBarProps) {
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             placeholder="Amount"
-            className="w-32 px-3 py-2 text-sm font-medium border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:border-transparent"
+            className="flex-1 min-w-[120px] px-3 py-2 text-sm font-medium border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:border-transparent"
             autoFocus
           />
 
@@ -358,7 +358,7 @@ export default function QuickAddBar({ onTransactionAdded }: QuickAddBarProps) {
           <select
             value={accountId}
             onChange={(e) => setAccountId(Number(e.target.value))}
-            className="w-40 px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-accent-500 focus:border-transparent"
+            className="flex-1 min-w-[140px] px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-accent-500 focus:border-transparent"
           >
             {accounts.map((acc) => (
               <option key={acc.id} value={acc.id}>
@@ -372,7 +372,7 @@ export default function QuickAddBar({ onTransactionAdded }: QuickAddBarProps) {
             <select
               value={toAccountId}
               onChange={(e) => setToAccountId(Number(e.target.value))}
-              className="w-40 px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-accent-500 focus:border-transparent"
+              className="flex-1 min-w-[140px] px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-accent-500 focus:border-transparent"
             >
               {accounts
                 .filter((acc) => acc.id !== accountId)
@@ -389,7 +389,7 @@ export default function QuickAddBar({ onTransactionAdded }: QuickAddBarProps) {
             <select
               value={categoryId}
               onChange={(e) => setCategoryId(Number(e.target.value))}
-              className="w-44 px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-accent-500 focus:border-transparent"
+              className="flex-[1.5] min-w-[160px] px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-accent-500 focus:border-transparent"
             >
               <option value={0}>Category</option>
               {buildCategoryOptions().map((opt) =>

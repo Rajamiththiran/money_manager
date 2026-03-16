@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { AccentColorProvider } from "./contexts/AccentColorContext";
+import { FontSizeProvider } from "./contexts/FontSizeContext";
 import { ToastProvider } from "./components/Toast";
 import LockScreen from "./components/LockScreen";
 import Sidebar from "./components/Sidebar";
@@ -206,9 +207,11 @@ function App() {
   return (
     <ThemeProvider>
       <AccentColorProvider>
-        <ToastProvider>
-          <AppContent />
-        </ToastProvider>
+        <FontSizeProvider>
+          <ToastProvider>
+            <AppContent />
+          </ToastProvider>
+        </FontSizeProvider>
       </AccentColorProvider>
     </ThemeProvider>
   );

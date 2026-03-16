@@ -267,7 +267,6 @@ pub async fn get_account_balance_history(
 
     // Walk through each day
     let mut current_date = start;
-    running_balance = opening_balance;
     while current_date <= end {
         let date_str = current_date.format("%Y-%m-%d").to_string();
         if let Some(change) = change_map.get(&date_str) {

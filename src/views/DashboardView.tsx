@@ -186,7 +186,7 @@ export default function DashboardView() {
   return (
     <div className="p-8">
       {/* Header with Comparison Selector */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex flex-wrap items-center justify-between gap-4 mb-8">
         <div>
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
             Dashboard
@@ -348,7 +348,7 @@ export default function DashboardView() {
           </div>
 
           <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8">
-            <div className="flex items-center justify-between mb-6">
+            <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
                 Recent Transactions
               </h2>

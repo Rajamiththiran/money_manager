@@ -282,17 +282,19 @@ export default function TransactionForm({
                 options={accountOptions}
                 required
               />
-              <CascadingCategorySelect
-                label="Category"
-                categories={filteredCategories}
-                selectedId={formData.category_id}
-                onChange={(categoryId) =>
-                  setFormData({ ...formData, category_id: categoryId })
-                }
-                required
-                showAddButton={true}
-                onAddCategory={() => setShowQuickCategory(true)}
-              />
+              <div className="min-w-0">
+                <CascadingCategorySelect
+                  label="Category"
+                  categories={filteredCategories}
+                  selectedId={formData.category_id}
+                  onChange={(categoryId) =>
+                    setFormData({ ...formData, category_id: categoryId })
+                  }
+                  required
+                  showAddButton={true}
+                  onAddCategory={() => setShowQuickCategory(true)}
+                />
+              </div>
             </>
           )}
         </div>

@@ -253,7 +253,7 @@ export default function AdvancedView() {
       {/* ════════ RECURRING ════════ */}
       {activeTab === "recurring" && (
         <div className="space-y-6">
-          <div className="flex justify-between items-center">
+          <div className="flex flex-wrap justify-between items-center gap-4">
             <div>
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
                 Recurring Transactions
@@ -404,7 +404,7 @@ export default function AdvancedView() {
       {/* ════════ INSTALLMENTS ════════ */}
       {activeTab === "installments" && (
         <div className="space-y-6">
-          <div className="flex justify-between items-center">
+          <div className="flex flex-wrap justify-between items-center gap-4">
             <div>
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
                 Installment Plans

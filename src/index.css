@@ -129,3 +129,15 @@
 ::-webkit-scrollbar-thumb:hover {
   @apply bg-gray-400 dark:bg-gray-600;
 }
+
+/* ── Global Font Sizing ────────────────────────────────────────── */
+
+html.font-size-small {
+  font-size: 14px;
+}
+html.font-size-medium {
+  font-size: 16px;
+}
+html.font-size-large {
+  font-size: 18px;
+}

@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { useTheme } from "../contexts/ThemeContext";
 import { useAccentColor } from "../contexts/AccentColorContext";
+import { useFontSize } from "../contexts/FontSizeContext";
 import { useToast } from "../components/Toast";
 import Button from "../components/Button";
 import Select from "../components/Select";
@@ -197,6 +198,7 @@ interface DbStats {
 export default function SettingsView() {
   const { theme, toggleTheme } = useTheme();
   const { accentColor: activeAccent, setAccentColor } = useAccentColor();
+  const { setFontSize } = useFontSize();
   const { success, error: showError, info } = useToast();
 
   const [settings, setSettings] = useState<AppSettings>(() => {
@@ -271,6 +273,11 @@ export default function SettingsView() {
 
       return updated;
     });
+
+    if (key === "fontSize" && typeof value === "string") {
+      setFontSize(value as "small" | "medium" | "large");
+    }
+
     setHasUnsavedChanges(true);
   };
 
@@ -282,6 +289,7 @@ export default function SettingsView() {
 
   const resetSettings = () => {
     setSettings(DEFAULT_SETTINGS);
+    setFontSize(DEFAULT_SETTINGS.fontSize as "small" | "medium" | "large");
     localStorage.setItem("appSettings", JSON.stringify(DEFAULT_SETTINGS));
     setHasUnsavedChanges(false);
     info("Settings Reset", "All preferences restored to defaults.");

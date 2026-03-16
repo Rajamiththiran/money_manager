@@ -6,6 +6,7 @@ import {
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import Select from "./Select";
+import CascadingCategorySelect from "./CascadingCategorySelect";
 import type { TransactionFilter } from "../types/transaction";
 import type { AccountWithBalance } from "../types/account";
 import type { CategoryWithChildren } from "../types/category";
@@ -160,18 +161,6 @@ export default function TransactionFilterBar({
   const hasActiveFilters =
     type !== "" || accountId !== "" || categoryId !== "" || search !== "";
 
-  // Build category options (flat list with parent > child)
-  const categoryOptions = [
-    { value: "", label: "All Categories" },
-    ...categories.flatMap((parent) => [
-      { value: parent.id.toString(), label: parent.name },
-      ...parent.children.map((child) => ({
-        value: child.id.toString(),
-        label: `  ↳ ${child.name}`,
-      })),
-    ]),
-  ];
-
   const accountOptions = [
     { value: "", label: "All Accounts" },
     ...accounts.map((acc) => ({
@@ -286,11 +275,15 @@ export default function TransactionFilterBar({
             onChange={(e) => handleAccountChange(e.target.value)}
             options={accountOptions}
           />
-          <Select
-            value={categoryId}
-            onChange={(e) => handleCategoryChange(e.target.value)}
-            options={categoryOptions}
-          />
+          <div className="flex-1 min-w-0">
+            <CascadingCategorySelect
+              categories={categories}
+              selectedId={categoryId ? parseInt(categoryId) : 0}
+              onChange={(id) => handleCategoryChange(id === 0 ? "" : id.toString())}
+              placeholder="All Categories"
+              allowClear={true}
+            />
+          </div>
         </div>
       )}
     </div>

@@ -12,7 +12,7 @@ import { useToast } from "../components/Toast";
 import type { CreateRecurringTransactionInput } from "../types/recurring";
 import type { CreateInstallmentPlan } from "../types/installment";
 import type { Account } from "../types/account";
-import type { Category } from "../types/category";
+import type { CategoryWithChildren } from "../types/category";
 import type { TransactionTemplateWithDetails } from "../types/template";
 
 type Tab = "templates" | "recurring" | "installments";
@@ -47,7 +47,7 @@ export default function AdvancedView() {
 
   const [activeTab, setActiveTab] = useState<Tab>("templates");
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
+  const [categories, setCategories] = useState<CategoryWithChildren[]>([]);
 
   // Recurring state
   const [showRecurringForm, setShowRecurringForm] = useState(false);
@@ -72,7 +72,7 @@ export default function AdvancedView() {
     try {
       const [acc, cat] = await Promise.all([
         invoke<Account[]>("get_accounts"),
-        invoke<Category[]>("get_categories"),
+        invoke<CategoryWithChildren[]>("get_categories_with_children"),
       ]);
       setAccounts(acc);
       setCategories(cat);
@@ -253,7 +253,7 @@ export default function AdvancedView() {
       {/* ════════ RECURRING ════════ */}
       {activeTab === "recurring" && (
         <div className="space-y-6">
-          <div className="flex justify-between items-center">
+          <div className="flex flex-wrap justify-between items-center gap-4">
             <div>
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
                 Recurring Transactions
@@ -404,7 +404,7 @@ export default function AdvancedView() {
       {/* ════════ INSTALLMENTS ════════ */}
       {activeTab === "installments" && (
         <div className="space-y-6">
-          <div className="flex justify-between items-center">
+          <div className="flex flex-wrap justify-between items-center gap-4">
             <div>
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
                 Installment Plans

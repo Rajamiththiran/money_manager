@@ -6,6 +6,7 @@ import {
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import Select from "./Select";
+import CascadingCategorySelect from "./CascadingCategorySelect";
 import type { TransactionFilter } from "../types/transaction";
 import type { AccountWithBalance } from "../types/account";
 import type { CategoryWithChildren } from "../types/category";
@@ -160,18 +161,6 @@ export default function TransactionFilterBar({
   const hasActiveFilters =
     type !== "" || accountId !== "" || categoryId !== "" || search !== "";
 
-  // Build category options (flat list with parent > child)
-  const categoryOptions = [
-    { value: "", label: "All Categories" },
-    ...categories.flatMap((parent) => [
-      { value: parent.id.toString(), label: parent.name },
-      ...parent.children.map((child) => ({
-        value: child.id.toString(),
-        label: `  ↳ ${child.name}`,
-      })),
-    ]),
-  ];
-
   const accountOptions = [
     { value: "", label: "All Accounts" },
     ...accounts.map((acc) => ({
@@ -190,7 +179,7 @@ export default function TransactionFilterBar({
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4 mb-6 space-y-3">
       {/* Row 1: Search + Date presets */}
-      <div className="flex flex-col sm:flex-row gap-3">
+      <div className="flex flex-col xl:flex-row gap-3">
         {/* Search */}
         <div className="relative flex-1">
           <MagnifyingGlassIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -276,21 +265,29 @@ export default function TransactionFilterBar({
       {/* Row 2: Advanced filters (collapsible) */}
       {showAdvanced && (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-gray-100 dark:border-gray-700/50">
-          <Select
-            value={type}
-            onChange={(e) => handleTypeChange(e.target.value)}
-            options={typeOptions}
-          />
-          <Select
-            value={accountId}
-            onChange={(e) => handleAccountChange(e.target.value)}
-            options={accountOptions}
-          />
-          <Select
-            value={categoryId}
-            onChange={(e) => handleCategoryChange(e.target.value)}
-            options={categoryOptions}
-          />
+          <div className="min-w-0">
+            <Select
+              value={type}
+              onChange={(e) => handleTypeChange(e.target.value)}
+              options={typeOptions}
+            />
+          </div>
+          <div className="min-w-0">
+            <Select
+              value={accountId}
+              onChange={(e) => handleAccountChange(e.target.value)}
+              options={accountOptions}
+            />
+          </div>
+          <div className="flex-1 min-w-0">
+            <CascadingCategorySelect
+              categories={categories}
+              selectedId={categoryId ? parseInt(categoryId) : 0}
+              onChange={(id) => handleCategoryChange(id === 0 ? "" : id.toString())}
+              placeholder="All Categories"
+              allowClear={true}
+            />
+          </div>
         </div>
       )}
     </div>

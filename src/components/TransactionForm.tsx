@@ -3,6 +3,7 @@ import { useState, useEffect } from "react";
 import Input from "./Input";
 import Select from "./Select";
 import CascadingCategorySelect from "./CascadingCategorySelect";
+import QuickCategoryModal from "./QuickCategoryModal";
 import Button from "./Button";
 import Calculator from "./Calculator";
 import { PhotoPicker } from "./PhotoAttachment";
@@ -18,6 +19,7 @@ interface TransactionFormProps {
     pendingPhotoPaths?: string[],
   ) => Promise<void>;
   onCancel: () => void;
+  onCategoryCreated?: () => Promise<void>;
   prefillData?: {
     transaction_type?: "INCOME" | "EXPENSE" | "TRANSFER";
     account_id?: number;
@@ -36,6 +38,7 @@ export default function TransactionForm({
   categories,
   onSubmit,
   onCancel,
+  onCategoryCreated,
   prefillData,
 }: TransactionFormProps) {
   const [type, setType] = useState<TransactionType>("EXPENSE");
@@ -51,6 +54,7 @@ export default function TransactionForm({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showCalculator, setShowCalculator] = useState(false);
+  const [showQuickCategory, setShowQuickCategory] = useState(false);
 
   // React to prefillData changes (template usage or initial load)
   useEffect(() => {
@@ -58,7 +62,8 @@ export default function TransactionForm({
       if (prefillData.transaction_type) {
         setType(prefillData.transaction_type);
       }
-      setFormData({
+      setFormData((prev) => ({
+        ...prev,
         date: new Date().toISOString().split("T")[0],
         amount: prefillData.amount?.toString() || "",
         account_id:
@@ -69,20 +74,19 @@ export default function TransactionForm({
         to_account_id: prefillData.to_account_id || accounts[1]?.id || 0,
         category_id: prefillData.category_id || 0,
         memo: prefillData.memo || "",
-      });
+      }));
     } else {
-      setType("EXPENSE");
-      setFormData({
-        date: new Date().toISOString().split("T")[0],
-        amount: "",
-        account_id: accounts[0]?.id || 0,
-        to_account_id: accounts[1]?.id || 0,
-        category_id: 0,
-        memo: "",
+      // Only set these if they aren't set yet (initial load)
+      setFormData((prev) => {
+        if (prev.account_id !== 0) return prev; // Already initialized
+        return {
+          ...prev,
+          account_id: accounts[0]?.id || 0,
+          to_account_id: accounts[1]?.id || 0,
+        };
       });
     }
-    setPendingPhotoPaths([]);
-  }, [prefillData, accounts]);
+  }, [prefillData]); // Only re-run when prefillData changes
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -278,15 +282,19 @@ export default function TransactionForm({
                 options={accountOptions}
                 required
               />
-              <CascadingCategorySelect
-                label="Category"
-                categories={filteredCategories}
-                selectedId={formData.category_id}
-                onChange={(categoryId) =>
-                  setFormData({ ...formData, category_id: categoryId })
-                }
-                required
-              />
+              <div className="min-w-0">
+                <CascadingCategorySelect
+                  label="Category"
+                  categories={filteredCategories}
+                  selectedId={formData.category_id}
+                  onChange={(categoryId) =>
+                    setFormData({ ...formData, category_id: categoryId })
+                  }
+                  required
+                  showAddButton={true}
+                  onAddCategory={() => setShowQuickCategory(true)}
+                />
+              </div>
             </>
           )}
         </div>
@@ -326,6 +334,22 @@ export default function TransactionForm({
           </Button>
         </div>
       </form>
+
+      {/* Quick Category Creation Modal */}
+      {showQuickCategory && type !== "TRANSFER" && (
+        <QuickCategoryModal
+          categoryType={type}
+          parentCategories={filteredCategories}
+          onCreated={async (newCategoryId) => {
+            setShowQuickCategory(false);
+            if (onCategoryCreated) {
+              await onCategoryCreated();
+            }
+            setFormData((prev) => ({ ...prev, category_id: newCategoryId }));
+          }}
+          onClose={() => setShowQuickCategory(false)}
+        />
+      )}
     </div>
   );
 }

@@ -14,17 +14,18 @@ import {
 import Button from "./Button";
 import Input from "./Input";
 import Select from "./Select";
+import CascadingCategorySelect from "./CascadingCategorySelect";
 import { useToast } from "./Toast";
 import type {
   TransactionTemplateWithDetails,
   CreateTemplateInput,
 } from "../types/template";
 import type { Account } from "../types/account";
-import type { Category } from "../types/category";
+import type { CategoryWithChildren } from "../types/category";
 
 interface TemplateLibraryProps {
   accounts: Account[];
-  categories: Category[];
+  categories: CategoryWithChildren[];
   onUseTemplate: (template: TransactionTemplateWithDetails) => void;
 }
 
@@ -150,13 +151,6 @@ export default function TemplateLibrary({
     ...accounts.map((a) => ({ value: String(a.id), label: a.name })),
   ];
 
-  const getCategoryOptions = (type: "INCOME" | "EXPENSE") => [
-    { value: "", label: "Select Category" },
-    ...categories
-      .filter((c) => c.category_type === type)
-      .map((c) => ({ value: String(c.id), label: c.name })),
-  ];
-
   const transactionTypeOptions = [
     { value: "INCOME", label: "Income" },
     { value: "EXPENSE", label: "Expense" },
@@ -245,20 +239,15 @@ export default function TemplateLibrary({
                   }
                   options={accountOptions}
                 />
-                <Select
-                  label="Category"
-                  value={form.category_id ? String(form.category_id) : ""}
-                  onChange={(e) =>
-                    updateForm({
-                      category_id: e.target.value
-                        ? Number(e.target.value)
-                        : null,
-                    })
-                  }
-                  options={getCategoryOptions(
-                    form.transaction_type as "INCOME" | "EXPENSE",
-                  )}
-                />
+                <div className="flex-1 min-w-0">
+                  <CascadingCategorySelect
+                    label="Category"
+                    categories={categories.filter((c) => c.category_type === form.transaction_type)}
+                    selectedId={form.category_id || 0}
+                    onChange={(id) => updateForm({ category_id: id || null })}
+                    placeholder="Select Category"
+                  />
+                </div>
               </>
             ) : (
               <>

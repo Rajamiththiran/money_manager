@@ -1,7 +1,7 @@
 // File: src/components/CascadingCategorySelect.tsx
 import { useState, useRef, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
-import { ChevronRightIcon, CheckIcon, ChevronDownIcon } from "@heroicons/react/24/outline";
+import { ChevronRightIcon, CheckIcon, ChevronDownIcon, PlusIcon } from "@heroicons/react/24/outline";
 import type { CategoryWithChildren } from "../types/category";
 
 interface CascadingCategorySelectProps {
@@ -11,6 +11,10 @@ interface CascadingCategorySelectProps {
   onChange: (categoryId: number) => void;
   required?: boolean;
   error?: string;
+  showAddButton?: boolean;
+  onAddCategory?: () => void;
+  placeholder?: string;
+  allowClear?: boolean;
 }
 
 export default function CascadingCategorySelect({
@@ -20,6 +24,10 @@ export default function CascadingCategorySelect({
   onChange,
   required,
   error,
+  showAddButton,
+  onAddCategory,
+  placeholder = "Select Category",
+  allowClear = false,
 }: CascadingCategorySelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [hoveredParentId, setHoveredParentId] = useState<number | null>(null);
@@ -33,15 +41,15 @@ export default function CascadingCategorySelect({
 
   // Find selected label
   const getSelectedLabel = useCallback((): string => {
-    if (!selectedId) return "Select Category";
+    if (!selectedId) return placeholder;
     for (const parent of categories) {
       if (parent.id === selectedId) return parent.name;
       for (const child of parent.children) {
         if (child.id === selectedId) return `${parent.name} › ${child.name}`;
       }
     }
-    return "Select Category";
-  }, [selectedId, categories]);
+    return placeholder;
+  }, [selectedId, categories, placeholder]);
 
   // Position the main dropdown under the trigger button
   const updateMenuPosition = useCallback(() => {
@@ -203,27 +211,48 @@ export default function CascadingCategorySelect({
         </label>
       )}
 
-      {/* Trigger Button */}
-      <button
-        type="button"
-        ref={triggerRef}
-        onClick={toggleOpen}
-        className={`
-          w-full px-3 py-2 border rounded-lg transition-colors text-left
-          flex items-center justify-between gap-2
-          focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent
-          bg-white dark:bg-gray-800
-          ${error ? "border-red-500" : "border-gray-300 dark:border-gray-600"}
-          ${selectedId ? "text-gray-900 dark:text-white" : "text-gray-500 dark:text-gray-400"}
-        `}
-      >
-        <span className="truncate text-sm">{getSelectedLabel()}</span>
-        <ChevronDownIcon
-          className={`h-4 w-4 flex-shrink-0 text-gray-400 transition-transform duration-150 ${
-            isOpen ? "rotate-180" : ""
-          }`}
-        />
-      </button>
+      {/* Trigger + Add Button Row */}
+      <div className="flex items-center gap-1.5">
+        {/* Trigger Button */}
+        <button
+          type="button"
+          ref={triggerRef}
+          onClick={toggleOpen}
+          className={`
+            flex-1 min-w-0 px-3 py-2 border rounded-lg transition-colors text-left
+            flex items-center justify-between gap-2
+            focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent
+            bg-white dark:bg-gray-800
+            ${error ? "border-red-500" : "border-gray-300 dark:border-gray-600"}
+            ${selectedId ? "text-gray-900 dark:text-white" : "text-gray-500 dark:text-gray-400"}
+          `}
+        >
+          <span className="truncate text-sm">{getSelectedLabel()}</span>
+          <ChevronDownIcon
+            className={`h-4 w-4 flex-shrink-0 text-gray-400 transition-transform duration-150 ${
+              isOpen ? "rotate-180" : ""
+            }`}
+          />
+        </button>
+
+        {/* Quick Add Button */}
+        {showAddButton && onAddCategory && (
+          <button
+            type="button"
+            onClick={onAddCategory}
+            title="Add new category"
+            className="flex-shrink-0 p-2 rounded-lg border border-gray-300 dark:border-gray-600
+              bg-white dark:bg-gray-800
+              hover:bg-blue-50 dark:hover:bg-blue-900/20
+              hover:border-blue-400 dark:hover:border-blue-500
+              text-gray-500 hover:text-blue-600 dark:hover:text-blue-400
+              transition-all duration-150
+              focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <PlusIcon className="h-4 w-4" />
+          </button>
+        )}
+      </div>
 
       {error && <p className="mt-1 text-sm text-red-600">{error}</p>}
 
@@ -243,6 +272,30 @@ export default function CascadingCategorySelect({
               bg-white dark:bg-gray-800 rounded-xl shadow-2xl
               border border-gray-200 dark:border-gray-600 py-1"
           >
+            {allowClear && (
+              <button
+                type="button"
+                onClick={() => handleSelect(0)}
+                className={`
+                  w-full flex items-center gap-2 px-3 py-2.5 text-sm transition-colors border-b border-gray-100 dark:border-gray-700/50
+                  ${
+                    selectedId === 0
+                      ? "bg-blue-50/50 dark:bg-blue-900/15 text-blue-600 dark:text-blue-400 font-medium"
+                      : "text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                  }
+                `}
+              >
+                <span className="w-4 flex-shrink-0">
+                  {selectedId === 0 && (
+                    <CheckIcon className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                  )}
+                </span>
+                <span className="flex-1 text-left truncate italic text-gray-500 dark:text-gray-400">
+                  {placeholder}
+                </span>
+              </button>
+            )}
+
             {categories.length === 0 ? (
               <div className="px-3 py-4 text-sm text-gray-400 text-center">
                 No categories available

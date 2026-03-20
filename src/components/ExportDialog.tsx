@@ -1,7 +1,7 @@
 // File: src/components/ExportDialog.tsx
 import { useState, useEffect } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
-import { writeTextFile } from "@tauri-apps/plugin-fs";
+import { writeTextFile, writeFile } from "@tauri-apps/plugin-fs";
 import { invoke } from "@tauri-apps/api/core";
 import { XMarkIcon, FolderIcon } from "@heroicons/react/24/outline";
 import Button from "./Button";
@@ -17,7 +17,7 @@ interface ExportFilter {
 interface ExportDialogProps {
   isOpen: boolean;
   onClose: () => void;
-  exportType: "csv" | "json" | "backup";
+  exportType: "csv" | "excel" | "json" | "backup";
   filters?: ExportFilter;
 }
 
@@ -43,6 +43,9 @@ export default function ExportDialog({
         case "csv":
           defaultName = `transactions_${date}.csv`;
           break;
+        case "excel":
+          defaultName = `transactions_${date}.xlsx`;
+          break;
         case "json":
           defaultName = `transactions_${date}.json`;
           break;
@@ -64,7 +67,9 @@ export default function ExportDialog({
       const filters =
         exportType === "csv"
           ? [{ name: "CSV Files", extensions: ["csv"] }]
-          : [{ name: "JSON Files", extensions: ["json"] }];
+          : exportType === "excel"
+            ? [{ name: "Excel Files", extensions: ["xlsx"] }]
+            : [{ name: "JSON Files", extensions: ["json"] }];
 
       // Open native Windows "Save As" dialog
       const selectedPath = await save({
@@ -105,6 +110,21 @@ export default function ExportDialog({
           });
           break;
 
+        case "excel": {
+          console.log("Calling backend export_transactions_excel...");
+          const bytes = await invoke<number[]>("export_transactions_excel", {
+            filter: filters || null,
+          });
+          const uint8Array = new Uint8Array(bytes);
+          await writeFile(filePath, uint8Array);
+          console.log("Excel file written successfully to:", filePath);
+          
+          onClose();
+          alert(`Successfully exported to:\n${filePath}`);
+          setIsExporting(false);
+          return; // Skip the writeTextFile below
+        }
+
         case "json":
           console.log("Calling backend export_transactions_json...");
           content = await invoke<string>("export_transactions_json", {
@@ -143,6 +163,8 @@ export default function ExportDialog({
     switch (exportType) {
       case "csv":
         return "Export Transactions as CSV";
+      case "excel":
+        return "Export Transactions as Excel";
       case "json":
         return "Export Transactions as JSON";
       case "backup":
@@ -156,6 +178,8 @@ export default function ExportDialog({
     switch (exportType) {
       case "csv":
         return "Export your transactions to a CSV file that can be opened in Excel or Google Sheets.";
+      case "excel":
+        return "Export a formatted Excel file with colored transaction types directly to your device.";
       case "json":
         return "Export your transactions to a JSON file for data portability.";
       case "backup":

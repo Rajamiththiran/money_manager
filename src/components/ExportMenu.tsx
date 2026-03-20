@@ -4,6 +4,7 @@ import {
   ArchiveBoxIcon,
   DocumentTextIcon,
   CodeBracketIcon,
+  TableCellsIcon,
 } from "@heroicons/react/24/outline";
 import Button from "./Button";
 import ExportDialog from "./ExportDialog";
@@ -22,11 +23,11 @@ interface ExportMenuProps {
 
 export default function ExportMenu({ filters }: ExportMenuProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [exportType, setExportType] = useState<"csv" | "json" | "backup">(
+  const [exportType, setExportType] = useState<"csv" | "excel" | "json" | "backup">(
     "csv",
   );
 
-  const openExportDialog = (type: "csv" | "json" | "backup") => {
+  const openExportDialog = (type: "csv" | "excel" | "json" | "backup") => {
     setExportType(type);
     setDialogOpen(true);
   };
@@ -40,6 +41,13 @@ export default function ExportMenu({ filters }: ExportMenuProps) {
           icon={<DocumentTextIcon className="h-4 w-4" />}
         >
           Export CSV
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={() => openExportDialog("excel")}
+          icon={<TableCellsIcon className="h-4 w-4" />}
+        >
+          Export Excel
         </Button>
         <Button
           variant="ghost"

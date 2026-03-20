@@ -31,3 +31,4 @@ anyhow = "1.0"
 dirs = "5.0"
 bcrypt = "0.16"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif"] }
+rust_xlsxwriter = "0.72.0"

@@ -107,6 +107,7 @@ pub fn run() {
             // Export commands
             commands::export::export_transactions_csv,
             commands::export::export_transactions_json,
+            commands::export::export_transactions_excel,
             commands::export::export_full_backup,
             // Credit Card commands
             commands::credit_cards::create_credit_card_settings,

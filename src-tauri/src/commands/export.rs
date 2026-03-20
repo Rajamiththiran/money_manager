@@ -1,5 +1,6 @@
 // File: src-tauri/src/commands/export.rs
 use crate::models::transactions::TransactionWithDetails;
+use rust_xlsxwriter::{Color, Format, Workbook};
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
 use tauri::State;
@@ -47,6 +48,251 @@ pub async fn export_transactions_csv(
 
     println!("CSV generated, length: {}", csv.len());
     Ok(csv)
+}
+
+#[tauri::command]
+pub async fn export_transactions_excel(
+    pool: State<'_, SqlitePool>,
+    filter: Option<ExportFilter>,
+) -> Result<Vec<u8>, String> {
+    println!("=== export_transactions_excel called ===");
+    let transactions = get_export_transactions(&pool, filter).await?;
+    println!("Found {} transactions for Excel export", transactions.len());
+
+    let mut workbook = Workbook::new();
+    let worksheet = workbook
+        .add_worksheet()
+        .set_name("Report")
+        .map_err(|e| e.to_string())?;
+
+    // --- Formats ---
+    // Title
+    let title_format = Format::new()
+        .set_background_color(Color::RGB(0x1e3a8a)) // blue-900
+        .set_font_color(Color::White)
+        .set_bold()
+        .set_font_size(16)
+        .set_align(rust_xlsxwriter::FormatAlign::Center)
+        .set_align(rust_xlsxwriter::FormatAlign::VerticalCenter);
+
+    // Subtitle
+    let subtitle_format = Format::new()
+        .set_background_color(Color::White)
+        .set_font_color(Color::RGB(0x1e3a8a))
+        .set_bold()
+        .set_align(rust_xlsxwriter::FormatAlign::Center)
+        .set_align(rust_xlsxwriter::FormatAlign::VerticalCenter)
+        .set_border_top(rust_xlsxwriter::FormatBorder::Medium)
+        .set_border_bottom(rust_xlsxwriter::FormatBorder::Medium);
+
+    // Section Headers
+    let income_header = Format::new()
+        .set_background_color(Color::RGB(0x15803d)) // green-700
+        .set_font_color(Color::White)
+        .set_bold()
+        .set_align(rust_xlsxwriter::FormatAlign::Center)
+        .set_align(rust_xlsxwriter::FormatAlign::VerticalCenter);
+
+    let expense_header = Format::new()
+        .set_background_color(Color::RGB(0xb91c1c)) // red-700
+        .set_font_color(Color::White)
+        .set_bold()
+        .set_align(rust_xlsxwriter::FormatAlign::Center)
+        .set_align(rust_xlsxwriter::FormatAlign::VerticalCenter);
+
+    let transfer_header = Format::new()
+        .set_background_color(Color::RGB(0x1d4ed8)) // blue-700
+        .set_font_color(Color::White)
+        .set_bold()
+        .set_align(rust_xlsxwriter::FormatAlign::Center)
+        .set_align(rust_xlsxwriter::FormatAlign::VerticalCenter);
+
+    // Column Headers
+    let income_col_header = Format::new()
+        .set_background_color(Color::RGB(0xbbf7d0)) // green-200
+        .set_font_color(Color::RGB(0x14532d)) // green-900
+        .set_bold()
+        .set_border_bottom(rust_xlsxwriter::FormatBorder::Thin);
+
+    let expense_col_header = Format::new()
+        .set_background_color(Color::RGB(0xfecaca)) // red-200
+        .set_font_color(Color::RGB(0x7f1d1d)) // red-900
+        .set_bold()
+        .set_border_bottom(rust_xlsxwriter::FormatBorder::Thin);
+
+    let transfer_col_header = Format::new()
+        .set_background_color(Color::RGB(0xbfdbfe)) // blue-200
+        .set_font_color(Color::RGB(0x1e3a8a)) // blue-900
+        .set_bold()
+        .set_border_bottom(rust_xlsxwriter::FormatBorder::Thin);
+
+    // Data Row Base Formats (Colors)
+    let c_white = Color::White;
+    let c_inc_dark = Color::RGB(0xf0fdf4); // green-50
+    let c_exp_dark = Color::RGB(0xfef2f2); // red-50
+    let c_tra_dark = Color::RGB(0xeff6ff); // blue-50
+    let c_text = Color::RGB(0x1f2937);     // gray-800
+
+    // Column widths
+    worksheet.set_column_width(0, 15).map_err(|e| e.to_string())?;
+    worksheet.set_column_width(1, 15).map_err(|e| e.to_string())?;
+    worksheet.set_column_width(2, 25).map_err(|e| e.to_string())?;
+    worksheet.set_column_width(3, 25).map_err(|e| e.to_string())?;
+    worksheet.set_column_width(4, 25).map_err(|e| e.to_string())?;
+    worksheet.set_column_width(5, 18).map_err(|e| e.to_string())?;
+    worksheet.set_column_width(6, 40).map_err(|e| e.to_string())?;
+
+    // Write Title & Subtitle
+    worksheet
+        .merge_range(
+            0,
+            0,
+            1,
+            6,
+            "MONEY MANAGER - TRANSACTIONS REPORT",
+            &title_format,
+        )
+        .map_err(|e| e.to_string())?;
+
+    let generated_date = format!(
+        "Generated on: {}",
+        chrono::Local::now().format("%Y-%m-%d %H:%M")
+    );
+    worksheet
+        .merge_range(2, 0, 2, 6, &generated_date, &subtitle_format)
+        .map_err(|e| e.to_string())?;
+
+    let mut current_row = 4;
+
+    // We can't use a closure easily with worksheet methods due to borrow checker and &mut,
+    // so let's just write a macro or duplicate the loop for the 3 sections.
+    // Actually, we can just do it procedurally since we own `worksheet`.
+
+    macro_rules! write_section {
+        ($title:expr, $txns:expr, $h_fmt:expr, $c_fmt:expr, $bg_dark:expr) => {
+            if !$txns.is_empty() {
+                worksheet
+                    .merge_range(current_row, 0, current_row, 6, $title, $h_fmt)
+                    .map_err(|e| e.to_string())?;
+                current_row += 1;
+
+                let headers = [
+                    "Date",
+                    "Type",
+                    "Account",
+                    "To Account",
+                    "Category",
+                    "Amount",
+                    "Memo",
+                ];
+                for (i, h) in headers.iter().enumerate() {
+                    worksheet
+                        .write_string_with_format(current_row, i as u16, *h, $c_fmt)
+                        .map_err(|e| e.to_string())?;
+                }
+                current_row += 1;
+
+                for (i, txn) in $txns.iter().enumerate() {
+                    let is_dark = i % 2 == 1;
+                    let bg_color = if is_dark {
+                        $bg_dark.clone()
+                    } else {
+                        c_white.clone()
+                    };
+
+                    let row_fmt = Format::new()
+                        .set_background_color(bg_color.clone())
+                        .set_font_color(c_text.clone());
+                    let num_fmt = Format::new()
+                        .set_background_color(bg_color)
+                        .set_font_color(c_text.clone())
+                        .set_num_format("#,##0.00");
+
+                    worksheet
+                        .write_string_with_format(current_row, 0, &txn.transaction.date, &row_fmt)
+                        .map_err(|e| e.to_string())?;
+                    worksheet
+                        .write_string_with_format(
+                            current_row,
+                            1,
+                            &txn.transaction.transaction_type,
+                            &row_fmt,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    worksheet
+                        .write_string_with_format(current_row, 2, &txn.account_name, &row_fmt)
+                        .map_err(|e| e.to_string())?;
+
+                    let to_account = txn.to_account_name.as_deref().unwrap_or("");
+                    worksheet
+                        .write_string_with_format(current_row, 3, to_account, &row_fmt)
+                        .map_err(|e| e.to_string())?;
+
+                    let category = txn.category_name.as_deref().unwrap_or("");
+                    worksheet
+                        .write_string_with_format(current_row, 4, category, &row_fmt)
+                        .map_err(|e| e.to_string())?;
+
+                    worksheet
+                        .write_number_with_format(
+                            current_row,
+                            5,
+                            txn.transaction.amount,
+                            &num_fmt,
+                        )
+                        .map_err(|e| e.to_string())?;
+
+                    let memo = txn.transaction.memo.as_deref().unwrap_or("");
+                    worksheet
+                        .write_string_with_format(current_row, 6, memo, &row_fmt)
+                        .map_err(|e| e.to_string())?;
+
+                    current_row += 1;
+                }
+                current_row += 2; // Spacing after section
+            }
+        };
+    }
+
+    let incomes: Vec<_> = transactions
+        .iter()
+        .filter(|t| t.transaction.transaction_type == "INCOME")
+        .collect();
+    let expenses: Vec<_> = transactions
+        .iter()
+        .filter(|t| t.transaction.transaction_type == "EXPENSE")
+        .collect();
+    let transfers: Vec<_> = transactions
+        .iter()
+        .filter(|t| t.transaction.transaction_type == "TRANSFER")
+        .collect();
+
+    write_section!(
+        "INCOME TRANSACTIONS",
+        incomes,
+        &income_header,
+        &income_col_header,
+        &c_inc_dark
+    );
+    write_section!(
+        "EXPENSE TRANSACTIONS",
+        expenses,
+        &expense_header,
+        &expense_col_header,
+        &c_exp_dark
+    );
+    write_section!(
+        "TRANSFER TRANSACTIONS",
+        transfers,
+        &transfer_header,
+        &transfer_col_header,
+        &c_tra_dark
+    );
+
+    let buf = workbook.save_to_buffer().map_err(|e| e.to_string())?;
+    println!("Excel buffer generated, size: {} bytes", buf.len());
+
+    Ok(buf)
 }
 
 #[tauri::command]

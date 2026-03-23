@@ -174,6 +174,11 @@ pub fn run() {
             commands::scheduled_backup::run_auto_backup_now,
             commands::scheduled_backup::check_and_run_auto_backup,
             commands::scheduled_backup::restore_from_zip_backup,
+            // Bills commands
+            commands::bills::get_upcoming_bills,
+            commands::bills::get_overdue_bill_count,
+            commands::bills::skip_bill_occurrence,
+            commands::bills::pay_bill_now,
             // Security commands
             commands::security::set_pin,
             commands::security::verify_pin,

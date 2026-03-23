@@ -158,8 +158,11 @@ function AppContent() {
   }, []);
 
   // Load overdue count on mount + when view changes + on custom refresh event
+  // Also poll every 15s so badge updates after creating items from any view
   useEffect(() => {
     refreshBillCount();
+    const interval = setInterval(refreshBillCount, 15000);
+    return () => clearInterval(interval);
   }, [currentView, refreshBillCount]);
 
   useEffect(() => {

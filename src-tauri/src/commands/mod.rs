@@ -10,6 +10,7 @@ pub mod installments;
 pub mod networth;
 pub mod photos;
 pub mod recurring;
+pub mod scheduled_backup;
 pub mod security;
 pub mod settings;
 pub mod templates;

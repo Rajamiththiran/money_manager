@@ -25,8 +25,19 @@ function AppContent() {
   const [pinEnabled, setPinEnabled] = useState(false);
   const [lockTimeout, setLockTimeout] = useState(5);
   const [isCheckingLock, setIsCheckingLock] = useState(true);
+  const [overdueBillCount, setOverdueBillCount] = useState(0);
   const lastActivityRef = useRef(Date.now());
   const lockTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Fetch overdue bill count for sidebar badge
+  const refreshBillCount = useCallback(async () => {
+    try {
+      const count = await invoke<number>("get_overdue_bill_count");
+      setOverdueBillCount(count);
+    } catch (err) {
+      console.error("Failed to fetch overdue bill count:", err);
+    }
+  }, []);
 
   // Check if PIN is enabled on mount
   useEffect(() => {
@@ -146,6 +157,20 @@ function AppContent() {
     };
   }, []);
 
+  // Load overdue count on mount + when view changes + on custom refresh event
+  // Also poll every 15s so badge updates after creating items from any view
+  useEffect(() => {
+    refreshBillCount();
+    const interval = setInterval(refreshBillCount, 15000);
+    return () => clearInterval(interval);
+  }, [currentView, refreshBillCount]);
+
+  useEffect(() => {
+    const handleRefreshBills = () => refreshBillCount();
+    window.addEventListener("refresh-bills", handleRefreshBills);
+    return () => window.removeEventListener("refresh-bills", handleRefreshBills);
+  }, [refreshBillCount]);
+
   const handleUnlock = useCallback(() => {
     setIsLocked(false);
     lastActivityRef.current = Date.now();
@@ -196,7 +221,7 @@ function AppContent() {
   return (
     // ✅ FIX 1: overflow-hidden prevents double scrollbars at the window level
     <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-gray-900">
-      <Sidebar currentView={currentView} onViewChange={setCurrentView} />
+      <Sidebar currentView={currentView} onViewChange={setCurrentView} overdueBillCount={overdueBillCount} />
       {/* ✅ FIX 2: min-w-0 prevents flex child overflowing when sidebar is wide */}
       <main className="flex-1 min-w-0 overflow-y-auto">{renderView()}</main>
     </div>

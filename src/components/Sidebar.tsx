@@ -20,6 +20,7 @@ import type { View } from "../types/navigation";
 interface SidebarProps {
   currentView: View;
   onViewChange: (view: View) => void;
+  overdueBillCount?: number;
 }
 
 const menuItems: { id: View; label: string; icon: React.ElementType }[] = [
@@ -34,7 +35,7 @@ const menuItems: { id: View; label: string; icon: React.ElementType }[] = [
   { id: "reports", label: "Reports", icon: DocumentChartBarIcon },
 ];
 
-export default function Sidebar({ currentView, onViewChange }: SidebarProps) {
+export default function Sidebar({ currentView, onViewChange, overdueBillCount = 0 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
@@ -84,13 +85,14 @@ export default function Sidebar({ currentView, onViewChange }: SidebarProps) {
           {menuItems.map((item) => {
             const Icon = item.icon;
             const isActive = currentView === item.id;
+            const showBadge = item.id === "dashboard" && overdueBillCount > 0;
             return (
               <li key={item.id}>
                 <button
                   onClick={() => onViewChange(item.id)}
                   title={collapsed ? item.label : undefined}
                   className={`
-                    w-full flex items-center rounded-lg transition-colors
+                    w-full flex items-center rounded-lg transition-colors relative
                     ${collapsed ? "justify-center px-2 py-2.5" : "gap-3 px-4 py-2.5"}
                     ${
                       isActive
@@ -108,6 +110,17 @@ export default function Sidebar({ currentView, onViewChange }: SidebarProps) {
                   />
                   {!collapsed && (
                     <span className="text-sm truncate">{item.label}</span>
+                  )}
+                  {showBadge && (
+                    <span className={`
+                      flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold
+                      ${collapsed
+                        ? "absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1"
+                        : "ml-auto min-w-[18px] h-[18px] px-1"
+                      }
+                    `}>
+                      {overdueBillCount > 9 ? "9+" : overdueBillCount}
+                    </span>
                   )}
                 </button>
               </li>

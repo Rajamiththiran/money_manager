@@ -32,7 +32,26 @@ pub fn run() {
                     .expect("Failed to initialize database")
             });
 
-            app.manage(pool);
+            app.manage(pool.clone());
+
+            // Auto-backup check: runs silently on startup, never blocks UI
+            let app_handle = app.handle().clone();
+            let pool_for_backup = pool.clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    match commands::scheduled_backup::check_and_run_auto_backup_internal(
+                        &pool_for_backup,
+                        &app_handle,
+                    )
+                    .await
+                    {
+                        Ok(Some(msg)) => println!("Auto-backup: {}", msg),
+                        Ok(None) => println!("Auto-backup: not due"),
+                        Err(e) => println!("Auto-backup error (non-fatal): {}", e),
+                    }
+                });
+            });
 
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -148,6 +167,13 @@ pub fn run() {
             // Settings commands
             commands::settings::restore_from_backup,
             commands::settings::clear_all_data,
+            // Scheduled Backup commands
+            commands::scheduled_backup::get_backup_settings,
+            commands::scheduled_backup::update_backup_settings,
+            commands::scheduled_backup::get_backup_status,
+            commands::scheduled_backup::run_auto_backup_now,
+            commands::scheduled_backup::check_and_run_auto_backup,
+            commands::scheduled_backup::restore_from_zip_backup,
             // Security commands
             commands::security::set_pin,
             commands::security::verify_pin,

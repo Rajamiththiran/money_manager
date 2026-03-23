@@ -25,6 +25,11 @@ import {
   Lock,
   Eye,
   EyeOff,
+  FolderOpen,
+  ToggleLeft,
+  ToggleRight,
+  Archive,
+  Image,
 } from "lucide-react";
 import { useTheme } from "../contexts/ThemeContext";
 import { useAccentColor } from "../contexts/AccentColorContext";
@@ -42,6 +47,30 @@ interface AppSettings {
   startOfMonth: number;
   accentColor: string;
   fontSize: string;
+}
+
+// Auto-Backup types
+interface AutoBackupSettings {
+  auto_backup_enabled: boolean;
+  auto_backup_frequency: string;
+  auto_backup_path: string;
+  auto_backup_retention: number;
+  auto_backup_include_photos: boolean;
+  auto_backup_last_run: string;
+}
+
+interface BackupStatus {
+  last_backup_date: string | null;
+  next_due_date: string | null;
+  backup_count: number;
+  is_overdue: boolean;
+}
+
+interface BackupResult {
+  success: boolean;
+  file_path: string;
+  file_size_bytes: number;
+  photos_included: boolean;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -235,8 +264,16 @@ export default function SettingsView() {
   const [showPin, setShowPin] = useState(false);
   const [securityTimeout, setSecurityTimeout] = useState(5);
 
+  // Auto-Backup state
+  const [autoBackupSettings, setAutoBackupSettings] =
+    useState<AutoBackupSettings | null>(null);
+  const [backupStatus, setBackupStatus] = useState<BackupStatus | null>(null);
+  const [isAutoBackingUp, setIsAutoBackingUp] = useState(false);
+  const [isSavingBackupSettings, setIsSavingBackupSettings] = useState(false);
+
   useEffect(() => {
     loadDbStats();
+    loadAutoBackupSettings();
   }, []);
 
   // Load security status on mount
@@ -315,6 +352,127 @@ export default function SettingsView() {
     }
   };
 
+  // —— Auto-Backup handlers ——————————————————————————
+  const loadAutoBackupSettings = async () => {
+    try {
+      const [settings, status] = await Promise.all([
+        invoke<AutoBackupSettings>("get_backup_settings"),
+        invoke<BackupStatus>("get_backup_status"),
+      ]);
+      setAutoBackupSettings(settings);
+      setBackupStatus(status);
+    } catch (err) {
+      console.error("Failed to load auto-backup settings:", err);
+    }
+  };
+
+  const saveAutoBackupSettings = async (updated: AutoBackupSettings) => {
+    setIsSavingBackupSettings(true);
+    try {
+      await invoke("update_backup_settings", { settings: updated });
+      setAutoBackupSettings(updated);
+      // Refresh status after saving
+      const status = await invoke<BackupStatus>("get_backup_status");
+      setBackupStatus(status);
+      success("Settings Saved", "Auto-backup preferences updated.");
+    } catch (err) {
+      showError("Failed to Save", String(err));
+    } finally {
+      setIsSavingBackupSettings(false);
+    }
+  };
+
+  const handleAutoBackupToggle = () => {
+    if (!autoBackupSettings) return;
+    const updated = {
+      ...autoBackupSettings,
+      auto_backup_enabled: !autoBackupSettings.auto_backup_enabled,
+    };
+    saveAutoBackupSettings(updated);
+  };
+
+  const handleBackupFrequencyChange = (freq: string) => {
+    if (!autoBackupSettings) return;
+    const updated = { ...autoBackupSettings, auto_backup_frequency: freq };
+    saveAutoBackupSettings(updated);
+  };
+
+  const handleBackupPathSelect = async () => {
+    if (!autoBackupSettings) return;
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Select Backup Folder",
+      });
+      if (selected && typeof selected === "string") {
+        const updated = { ...autoBackupSettings, auto_backup_path: selected };
+        saveAutoBackupSettings(updated);
+      }
+    } catch (err) {
+      showError("Folder Selection Failed", String(err));
+    }
+  };
+
+  const handleRetentionChange = (value: number) => {
+    if (!autoBackupSettings) return;
+    const clamped = Math.max(1, Math.min(50, value));
+    const updated = { ...autoBackupSettings, auto_backup_retention: clamped };
+    saveAutoBackupSettings(updated);
+  };
+
+  const handleIncludePhotosToggle = () => {
+    if (!autoBackupSettings) return;
+    const updated = {
+      ...autoBackupSettings,
+      auto_backup_include_photos: !autoBackupSettings.auto_backup_include_photos,
+    };
+    saveAutoBackupSettings(updated);
+  };
+
+  const handleAutoBackupNow = async () => {
+    setIsAutoBackingUp(true);
+    try {
+      const result = await invoke<BackupResult>("run_auto_backup_now");
+      if (result.success) {
+        success(
+          "Backup Created",
+          `Backup saved to ${result.file_path.split(/[\/\\]/).pop()} (${formatBytes(result.file_size_bytes)})`,
+        );
+        // Refresh status
+        await loadAutoBackupSettings();
+      }
+    } catch (err) {
+      showError("Backup Failed", String(err));
+    } finally {
+      setIsAutoBackingUp(false);
+    }
+  };
+
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+  };
+
+  const formatAutoBackupDate = (isoStr: string | null | undefined): string => {
+    if (!isoStr) return "Never";
+    try {
+      const date = new Date(isoStr);
+      return date.toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch {
+      return "Unknown";
+    }
+  };
+
   // —— Backup ——————————————————————————————————————————
   const handleBackup = async () => {
     setIsBackingUp(true);
@@ -368,8 +526,13 @@ export default function SettingsView() {
     setIsRestoring(true);
     try {
       const filePath = await open({
-        filters: [{ name: "JSON Files", extensions: ["json"] }],
-        title: "Select Backup File",
+        filters: [
+          {
+            name: "Backup Files",
+            extensions: ["json", "zip"],
+          },
+        ],
+        title: "Select Backup File (.json or .zip)",
         multiple: false,
       });
 
@@ -378,91 +541,135 @@ export default function SettingsView() {
         return;
       }
 
-      const content = await readTextFile(filePath as string);
+      const fileStr = filePath as string;
+      const isZip = fileStr.toLowerCase().endsWith(".zip");
 
-      // Validate JSON structure
-      let backup;
-      try {
-        backup = JSON.parse(content);
-      } catch {
-        showError(
-          "Invalid File",
-          "The selected file is not a valid JSON backup.",
+      if (isZip) {
+        // ── ZIP restore path ──
+        const proceedWithRestore = await ask(
+          `Restore from zip backup?\n\nFile: ${fileStr.split(/[/\\]/).pop()}\n\nThis will replace ALL current data including accounts, categories, transactions, budgets, and photos.\n\nProceed with restore?`,
+          {
+            title: "Confirm Restore",
+            kind: "info",
+            okLabel: "Restore Now",
+            cancelLabel: "Cancel",
+          },
         );
-        setIsRestoring(false);
-        return;
-      }
 
-      if (!backup.version || !backup.data) {
-        showError(
-          "Invalid Backup",
-          "This file does not appear to be a Money Manager backup.",
+        if (!proceedWithRestore) {
+          setIsRestoring(false);
+          return;
+        }
+
+        const result = await invoke<{
+          success: boolean;
+          accounts_restored: number;
+          categories_restored: number;
+          transactions_restored: number;
+          budgets_restored: number;
+          photos_restored: number;
+        }>("restore_from_zip_backup", { zipPath: fileStr });
+
+        if (result.success) {
+          const photoMsg =
+            result.photos_restored > 0
+              ? `, and ${result.photos_restored} photos`
+              : "";
+          success(
+            "Restore Complete",
+            `Restored ${result.accounts_restored} accounts, ${result.categories_restored} categories, ${result.transactions_restored} transactions, ${result.budgets_restored} budgets${photoMsg}.`,
+          );
+        }
+      } else {
+        // ── JSON restore path (existing) ──
+        const content = await readTextFile(fileStr);
+
+        // Validate JSON structure
+        let backup;
+        try {
+          backup = JSON.parse(content);
+        } catch {
+          showError(
+            "Invalid File",
+            "The selected file is not a valid JSON backup.",
+          );
+          setIsRestoring(false);
+          return;
+        }
+
+        if (!backup.version || !backup.data) {
+          showError(
+            "Invalid Backup",
+            "This file does not appear to be a Money Manager backup.",
+          );
+          setIsRestoring(false);
+          return;
+        }
+
+        // Validate expected data keys
+        const requiredKeys = [
+          "accounts",
+          "categories",
+          "transactions",
+          "budgets",
+        ];
+        const missingKeys = requiredKeys.filter(
+          (key) => !(key in backup.data),
         );
-        setIsRestoring(false);
-        return;
-      }
+        if (missingKeys.length > 0) {
+          showError(
+            "Incomplete Backup",
+            `Missing data sections: ${missingKeys.join(", ")}`,
+          );
+          setIsRestoring(false);
+          return;
+        }
 
-      // Validate expected data keys
-      const requiredKeys = [
-        "accounts",
-        "categories",
-        "transactions",
-        "budgets",
-      ];
-      const missingKeys = requiredKeys.filter((key) => !(key in backup.data));
-      if (missingKeys.length > 0) {
-        showError(
-          "Incomplete Backup",
-          `Missing data sections: ${missingKeys.join(", ")}`,
+        // Show what's in the backup
+        const stats = {
+          accounts: Array.isArray(backup.data.accounts)
+            ? backup.data.accounts.length
+            : 0,
+          categories: Array.isArray(backup.data.categories)
+            ? backup.data.categories.length
+            : 0,
+          transactions: Array.isArray(backup.data.transactions)
+            ? backup.data.transactions.length
+            : 0,
+          budgets: Array.isArray(backup.data.budgets)
+            ? backup.data.budgets.length
+            : 0,
+        };
+
+        const proceedWithRestore = await ask(
+          `This backup contains:\n• ${stats.accounts} accounts\n• ${stats.categories} categories\n• ${stats.transactions} transactions\n• ${stats.budgets} budgets\n\nBackup date: ${backup.exported_at ? new Date(backup.exported_at).toLocaleString() : "Unknown"}\n\nProceed with restore?`,
+          {
+            title: "Confirm Restore",
+            kind: "info",
+            okLabel: "Restore Now",
+            cancelLabel: "Cancel",
+          },
         );
-        setIsRestoring(false);
-        return;
-      }
 
-      // Show what's in the backup
-      const stats = {
-        accounts: Array.isArray(backup.data.accounts)
-          ? backup.data.accounts.length
-          : 0,
-        categories: Array.isArray(backup.data.categories)
-          ? backup.data.categories.length
-          : 0,
-        transactions: Array.isArray(backup.data.transactions)
-          ? backup.data.transactions.length
-          : 0,
-        budgets: Array.isArray(backup.data.budgets)
-          ? backup.data.budgets.length
-          : 0,
-      };
+        if (!proceedWithRestore) {
+          setIsRestoring(false);
+          return;
+        }
 
-      const proceedWithRestore = await ask(
-        `This backup contains:\n• ${stats.accounts} accounts\n• ${stats.categories} categories\n• ${stats.transactions} transactions\n• ${stats.budgets} budgets\n\nBackup date: ${backup.exported_at ? new Date(backup.exported_at).toLocaleString() : "Unknown"}\n\nProceed with restore?`,
-        {
-          title: "Confirm Restore",
-          kind: "info",
-          okLabel: "Restore Now",
-          cancelLabel: "Cancel",
-        },
-      );
+        const result = await invoke<{
+          success: boolean;
+          accounts_restored: number;
+          categories_restored: number;
+          transactions_restored: number;
+          budgets_restored: number;
+        }>("restore_from_backup", { backupJson: content });
 
-      if (!proceedWithRestore) {
-        setIsRestoring(false);
-        return;
-      }
-
-      const result = await invoke<{
-        success: boolean;
-        accounts_restored: number;
-        categories_restored: number;
-        transactions_restored: number;
-        budgets_restored: number;
-      }>("restore_from_backup", { backupJson: content });
-
-      if (result.success) {
-        success(
-          "Restore Complete",
-          `Restored ${result.accounts_restored} accounts, ${result.categories_restored} categories, ${result.transactions_restored} transactions, and ${result.budgets_restored} budgets.`,
-        );
+        if (result.success) {
+          success(
+            "Restore Complete",
+            `Restored ${result.accounts_restored} accounts, ${result.categories_restored} categories, ${result.transactions_restored} transactions, and ${result.budgets_restored} budgets.`,
+          );
+        }
       }
 
       await loadDbStats();
@@ -885,7 +1092,7 @@ export default function SettingsView() {
                 Restore Backup
               </p>
               <p className="text-xs text-gray-500 dark:text-gray-400">
-                Import data from file
+                Import from JSON or ZIP file
               </p>
             </div>
           </button>
@@ -908,6 +1115,220 @@ export default function SettingsView() {
             </div>
           </button>
         </div>
+      </SettingSection>
+
+      {/* ═══ Auto-Backup ═══ */}
+      <SettingSection
+        icon={
+          <Archive className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+        }
+        title="Auto-Backup"
+        description="Configure automatic database backups on app startup"
+      >
+        {autoBackupSettings && (
+          <>
+            {/* Enable/Disable Toggle */}
+            <div className="flex items-center justify-between p-4 rounded-lg bg-gray-50 dark:bg-gray-700/30 border border-gray-100 dark:border-gray-700">
+              <div className="flex items-center gap-3">
+                <div
+                  className={`p-2 rounded-lg ${
+                    autoBackupSettings.auto_backup_enabled
+                      ? "bg-emerald-100 dark:bg-emerald-900/30"
+                      : "bg-gray-100 dark:bg-gray-700"
+                  }`}
+                >
+                  <Archive
+                    className={`w-5 h-5 ${
+                      autoBackupSettings.auto_backup_enabled
+                        ? "text-emerald-600 dark:text-emerald-400"
+                        : "text-gray-400"
+                    }`}
+                  />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-gray-900 dark:text-white">
+                    Automatic Backup
+                  </p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {autoBackupSettings.auto_backup_enabled
+                      ? "Enabled — Backups run automatically on app startup"
+                      : "Disabled — Click to enable automatic backups"}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={handleAutoBackupToggle}
+                disabled={isSavingBackupSettings}
+                className="focus:outline-none disabled:opacity-50"
+              >
+                {autoBackupSettings.auto_backup_enabled ? (
+                  <ToggleRight className="w-10 h-10 text-emerald-500" />
+                ) : (
+                  <ToggleLeft className="w-10 h-10 text-gray-400" />
+                )}
+              </button>
+            </div>
+
+            {/* Status Display */}
+            {autoBackupSettings.auto_backup_enabled && backupStatus && (
+              <div
+                className={`p-4 rounded-lg border ${
+                  backupStatus.is_overdue
+                    ? "border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20"
+                    : "border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/30"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-gray-400" />
+                      <span className="text-sm text-gray-900 dark:text-white">
+                        Last backup:{" "}
+                        <span className="font-medium">
+                          {formatAutoBackupDate(
+                            backupStatus.last_backup_date,
+                          )}
+                        </span>
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Calendar className="w-4 h-4 text-gray-400" />
+                      <span className="text-sm text-gray-900 dark:text-white">
+                        Next due:{" "}
+                        <span className="font-medium">
+                          {formatAutoBackupDate(backupStatus.next_due_date)}
+                        </span>
+                      </span>
+                    </div>
+                    {backupStatus.backup_count > 0 && (
+                      <div className="flex items-center gap-2">
+                        <Archive className="w-4 h-4 text-gray-400" />
+                        <span className="text-sm text-gray-500 dark:text-gray-400">
+                          {backupStatus.backup_count} backup
+                          {backupStatus.backup_count !== 1 ? "s" : ""} stored
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {backupStatus.is_overdue && (
+                      <span className="px-2 py-1 rounded-full text-xs font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
+                        Overdue
+                      </span>
+                    )}
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={handleAutoBackupNow}
+                      disabled={
+                        isAutoBackingUp ||
+                        !autoBackupSettings.auto_backup_path
+                      }
+                      icon={
+                        isAutoBackingUp ? (
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Download className="w-4 h-4" />
+                        )
+                      }
+                    >
+                      {isAutoBackingUp ? "Backing up..." : "Backup Now"}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Settings (shown when enabled) */}
+            {autoBackupSettings.auto_backup_enabled && (
+              <>
+                <SettingRow
+                  label="Backup Frequency"
+                  description="How often auto-backup runs on app startup"
+                >
+                  <Select
+                    value={autoBackupSettings.auto_backup_frequency}
+                    onChange={(e) =>
+                      handleBackupFrequencyChange(e.target.value)
+                    }
+                    options={[
+                      { value: "DAILY", label: "Daily" },
+                      { value: "WEEKLY", label: "Weekly" },
+                      { value: "MONTHLY", label: "Monthly" },
+                    ]}
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label="Backup Folder"
+                  description={
+                    autoBackupSettings.auto_backup_path
+                      ? autoBackupSettings.auto_backup_path
+                      : "No folder selected"
+                  }
+                >
+                  <button
+                    onClick={handleBackupPathSelect}
+                    className="w-full flex items-center justify-between px-4 py-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <FolderOpen className="w-4 h-4 text-gray-400" />
+                      <span className="text-sm text-gray-900 dark:text-white truncate">
+                        {autoBackupSettings.auto_backup_path
+                          ? autoBackupSettings.auto_backup_path
+                              .split(/[\/\\]/)
+                              .pop()
+                          : "Choose folder..."}
+                      </span>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-gray-400" />
+                  </button>
+                </SettingRow>
+
+                <SettingRow
+                  label="Keep Last N Backups"
+                  description="Older backups are automatically deleted"
+                >
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={autoBackupSettings.auto_backup_retention}
+                    onChange={(e) =>
+                      handleRetentionChange(Number(e.target.value))
+                    }
+                    className="w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                  />
+                </SettingRow>
+
+                <div className="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-700/30 border border-gray-100 dark:border-gray-700">
+                  <div className="flex items-center gap-3">
+                    <Image className="w-4 h-4 text-gray-400" />
+                    <div>
+                      <p className="text-sm font-medium text-gray-900 dark:text-white">
+                        Include Photos
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        Receipt photos will be included in the backup zip
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleIncludePhotosToggle}
+                    disabled={isSavingBackupSettings}
+                    className="focus:outline-none disabled:opacity-50"
+                  >
+                    {autoBackupSettings.auto_backup_include_photos ? (
+                      <ToggleRight className="w-8 h-8 text-emerald-500" />
+                    ) : (
+                      <ToggleLeft className="w-8 h-8 text-gray-400" />
+                    )}
+                  </button>
+                </div>
+              </>
+            )}
+          </>
+        )}
       </SettingSection>
 
       {/* ═══ Security ═══ */}

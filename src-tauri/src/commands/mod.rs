@@ -1,6 +1,7 @@
 // File: src-tauri/src/commands/mod.rs
 pub mod accounts;
 pub mod analytics;
+pub mod bills;
 pub mod budgets;
 pub mod categories;
 pub mod credit_cards;

@@ -12,6 +12,14 @@ pub async fn restore_from_backup(
     pool: State<'_, SqlitePool>,
     backup_json: String,
 ) -> Result<RestoreResult, String> {
+    restore_from_backup_internal(pool.inner(), &backup_json).await
+}
+
+/// Internal version without State wrapper — callable from scheduled_backup.rs
+pub async fn restore_from_backup_internal(
+    pool: &SqlitePool,
+    backup_json: &str,
+) -> Result<RestoreResult, String> {
     // 1. Parse and validate backup JSON
     let backup: serde_json::Value = serde_json::from_str(&backup_json)
         .map_err(|e| format!("Invalid backup file format: {}", e))?;
@@ -54,7 +62,6 @@ pub async fn restore_from_backup(
 
     // 2. Begin transaction for atomic restore
     let mut tx = pool
-        .inner()
         .begin()
         .await
         .map_err(|e| format!("Failed to begin transaction: {}", e))?;

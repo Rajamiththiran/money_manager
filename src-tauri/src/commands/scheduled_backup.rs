@@ -43,6 +43,10 @@ pub struct ZipRestoreResult {
     pub transactions_restored: i64,
     pub budgets_restored: i64,
     pub photos_restored: i64,
+    pub tags_restored: i64,
+    pub savings_goals_restored: i64,
+    pub transaction_tags_restored: i64,
+    pub goal_contributions_restored: i64,
 }
 
 // ======================== COMMANDS ========================
@@ -328,9 +332,11 @@ pub async fn restore_from_zip_backup(
         }
     }
 
-    println!("Zip restore complete: {} accounts, {} categories, {} transactions, {} budgets, {} photos",
+    println!("Zip restore complete: {} accounts, {} categories, {} tags, {} goals, {} transactions, {} budgets, {} photos",
         restore_result.accounts_restored,
         restore_result.categories_restored,
+        restore_result.tags_restored,
+        restore_result.savings_goals_restored,
         restore_result.transactions_restored,
         restore_result.budgets_restored,
         photos_restored,
@@ -343,6 +349,10 @@ pub async fn restore_from_zip_backup(
         transactions_restored: restore_result.transactions_restored,
         budgets_restored: restore_result.budgets_restored,
         photos_restored,
+        tags_restored: restore_result.tags_restored,
+        savings_goals_restored: restore_result.savings_goals_restored,
+        transaction_tags_restored: restore_result.transaction_tags_restored,
+        goal_contributions_restored: restore_result.goal_contributions_restored,
     })
 }
 
@@ -634,6 +644,58 @@ async fn generate_backup_json(pool: &SqlitePool) -> Result<String, String> {
         })
         .collect();
 
+    // Tags
+    let tag_rows = sqlx::query("SELECT id, name, color, created_at FROM tags ORDER BY id")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    let tags: Vec<serde_json::Value> = tag_rows.iter().map(|row| serde_json::json!({
+        "id": row.get::<i64, _>("id"),
+        "name": row.get::<String, _>("name"),
+        "color": row.get::<String, _>("color"),
+        "created_at": row.get::<String, _>("created_at")
+    })).collect();
+
+    let txn_tag_rows = sqlx::query("SELECT transaction_id, tag_id FROM transaction_tags")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    let transaction_tags: Vec<serde_json::Value> = txn_tag_rows.iter().map(|row| serde_json::json!({
+        "transaction_id": row.get::<i64, _>("transaction_id"),
+        "tag_id": row.get::<i64, _>("tag_id")
+    })).collect();
+
+    // Savings Goals
+    let goal_rows = sqlx::query("SELECT id, name, target_amount, target_date, linked_account_id, color, icon, status, created_at, updated_at FROM savings_goals ORDER BY id")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    let savings_goals: Vec<serde_json::Value> = goal_rows.iter().map(|row| serde_json::json!({
+        "id": row.get::<i64, _>("id"),
+        "name": row.get::<String, _>("name"),
+        "target_amount": row.get::<f64, _>("target_amount"),
+        "target_date": row.get::<Option<String>, _>("target_date"),
+        "linked_account_id": row.get::<Option<i64>, _>("linked_account_id"),
+        "color": row.get::<String, _>("color"),
+        "icon": row.get::<String, _>("icon"),
+        "status": row.get::<String, _>("status"),
+        "created_at": row.get::<String, _>("created_at"),
+        "updated_at": row.get::<String, _>("updated_at")
+    })).collect();
+
+    let goal_contrib_rows = sqlx::query("SELECT id, goal_id, amount, contribution_date, note, created_at FROM goal_contributions ORDER BY id")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    let goal_contributions: Vec<serde_json::Value> = goal_contrib_rows.iter().map(|row| serde_json::json!({
+        "id": row.get::<i64, _>("id"),
+        "goal_id": row.get::<i64, _>("goal_id"),
+        "amount": row.get::<f64, _>("amount"),
+        "contribution_date": row.get::<String, _>("contribution_date"),
+        "note": row.get::<Option<String>, _>("note"),
+        "created_at": row.get::<String, _>("created_at")
+    })).collect();
+
     let backup = serde_json::json!({
         "version": "1.0",
         "exported_at": chrono::Utc::now().to_rfc3339(),
@@ -642,7 +704,11 @@ async fn generate_backup_json(pool: &SqlitePool) -> Result<String, String> {
             "categories": categories,
             "transactions": transactions,
             "budgets": budgets,
-            "transaction_photos": transaction_photos
+            "transaction_photos": transaction_photos,
+            "tags": tags,
+            "transaction_tags": transaction_tags,
+            "savings_goals": savings_goals,
+            "goal_contributions": goal_contributions
         }
     });
 

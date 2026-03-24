@@ -60,6 +60,30 @@ pub async fn restore_from_backup_internal(
         .and_then(|v| v.as_array())
         .ok_or_else(|| "Backup missing 'budgets' data".to_string())?;
 
+    let tags = data
+        .get("tags")
+        .and_then(|v| v.as_array())
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+
+    let transaction_tags = data
+        .get("transaction_tags")
+        .and_then(|v| v.as_array())
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+
+    let savings_goals = data
+        .get("savings_goals")
+        .and_then(|v| v.as_array())
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+
+    let goal_contributions = data
+        .get("goal_contributions")
+        .and_then(|v| v.as_array())
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+
     // 2. Begin transaction for atomic restore
     let mut tx = pool
         .begin()
@@ -74,6 +98,10 @@ pub async fn restore_from_backup_internal(
 
     // 4. Clear all user data tables (order matters for foreign keys)
     let tables_to_clear = [
+        "goal_contributions",
+        "savings_goals",
+        "transaction_tags",
+        "tags",
         "journal_entries",
         "installment_payments",
         "credit_card_statements",
@@ -250,11 +278,79 @@ pub async fn restore_from_backup_internal(
     //    CRITICAL: journal_entries.account_id references accounts(id).
     //    Only account IDs go here — NEVER category IDs.
     // ============================================================
+    // 8a. Restore tags & build old_id → new_id map
+    // ============================================================
+    let mut tag_id_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    let mut tags_restored: i64 = 0;
+
+    for tag in tags {
+        let old_id = tag.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let name = tag.get("name").and_then(|v| v.as_str()).unwrap_or("Unknown Tag");
+        let color = tag.get("color").and_then(|v| v.as_str()).unwrap_or("#6B7280");
+        let created_at = tag.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
+
+        let result = sqlx::query("INSERT INTO tags (name, color, created_at) VALUES (?, ?, ?)")
+            .bind(name)
+            .bind(color)
+            .bind(if created_at.is_empty() { chrono::Utc::now().to_rfc3339() } else { created_at.to_string() })
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to restore tag '{}': {}", name, e))?;
+
+        tag_id_map.insert(old_id, result.last_insert_rowid());
+        tags_restored += 1;
+    }
+
+    // ============================================================
+    // 8b. Restore savings goals & build old_id → new_id map
+    // ============================================================
+    let mut goal_id_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    let mut savings_goals_restored: i64 = 0;
+
+    for goal in savings_goals {
+        let old_id = goal.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let name = goal.get("name").and_then(|v| v.as_str()).unwrap_or("Unknown Goal");
+        let target_amount = goal.get("target_amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let target_date = goal.get("target_date").and_then(|v| v.as_str());
+        let old_linked_account_id = goal.get("linked_account_id").and_then(|v| v.as_i64());
+        let color = goal.get("color").and_then(|v| v.as_str()).unwrap_or("#6B7280");
+        let icon = goal.get("icon").and_then(|v| v.as_str()).unwrap_or("target");
+        let status = goal.get("status").and_then(|v| v.as_str()).unwrap_or("ACTIVE");
+        let created_at = goal.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
+        let updated_at = goal.get("updated_at").and_then(|v| v.as_str()).unwrap_or("");
+
+        let new_linked_account_id = old_linked_account_id.and_then(|id| account_id_map.get(&id).copied());
+
+        let result = sqlx::query(
+            "INSERT INTO savings_goals (name, target_amount, target_date, linked_account_id, color, icon, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(name)
+        .bind(target_amount)
+        .bind(target_date)
+        .bind(new_linked_account_id)
+        .bind(color)
+        .bind(icon)
+        .bind(status)
+        .bind(if created_at.is_empty() { chrono::Utc::now().to_rfc3339() } else { created_at.to_string() })
+        .bind(if updated_at.is_empty() { chrono::Utc::now().to_rfc3339() } else { updated_at.to_string() })
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to restore savings goal '{}': {}", name, e))?;
+
+        goal_id_map.insert(old_id, result.last_insert_rowid());
+        savings_goals_restored += 1;
+    }
+
+    // ============================================================
+    // 9. Restore transactions and journal entries
+    // ============================================================
+    let mut txn_id_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
     let mut transactions_restored: i64 = 0;
 
     for txn in transactions {
         // Handle both flat and nested export format
         let txn_data = txn.get("transaction").unwrap_or(txn);
+        let old_id = txn_data.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
 
         let date = txn_data
             .get("date")
@@ -326,6 +422,9 @@ pub async fn restore_from_backup_internal(
         .map_err(|e| format!("Failed to restore transaction (date: {}): {}", date, e))?;
 
         let new_txn_id = result.last_insert_rowid();
+        if old_id > 0 {
+            txn_id_map.insert(old_id, new_txn_id);
+        }
 
         // Create journal entries — ONLY using account IDs
         match txn_type {
@@ -390,6 +489,48 @@ pub async fn restore_from_backup_internal(
     }
 
     // ============================================================
+    // 9b. Restore transaction tags
+    // ============================================================
+    let mut transaction_tags_restored: i64 = 0;
+    for tt_entry in transaction_tags {
+        let old_txn_id = tt_entry.get("transaction_id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let old_tag_id = tt_entry.get("tag_id").and_then(|v| v.as_i64()).unwrap_or(0);
+
+        if let (Some(&new_txn_id), Some(&new_tag_id)) = (txn_id_map.get(&old_txn_id), tag_id_map.get(&old_tag_id)) {
+            let _ = sqlx::query("INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)")
+                .bind(new_txn_id)
+                .bind(new_tag_id)
+                .execute(&mut *tx)
+                .await;
+            transaction_tags_restored += 1;
+        }
+    }
+
+    // ============================================================
+    // 9c. Restore goal contributions
+    // ============================================================
+    let mut goal_contributions_restored: i64 = 0;
+    for contrib_entry in goal_contributions {
+        let old_goal_id = contrib_entry.get("goal_id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let amount = contrib_entry.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let contribution_date = contrib_entry.get("contribution_date").and_then(|v| v.as_str()).unwrap_or("");
+        let note = contrib_entry.get("note").and_then(|v| v.as_str());
+        let created_at = contrib_entry.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
+
+        if let Some(&new_goal_id) = goal_id_map.get(&old_goal_id) {
+            let _ = sqlx::query("INSERT INTO goal_contributions (goal_id, amount, contribution_date, note, created_at) VALUES (?, ?, ?, ?, ?)")
+                .bind(new_goal_id)
+                .bind(amount)
+                .bind(if contribution_date.is_empty() { chrono::Utc::now().to_rfc3339() } else { contribution_date.to_string() })
+                .bind(note)
+                .bind(if created_at.is_empty() { chrono::Utc::now().to_rfc3339() } else { created_at.to_string() })
+                .execute(&mut *tx)
+                .await;
+            goal_contributions_restored += 1;
+        }
+    }
+
+    // ============================================================
     // 10. Restore budgets
     // ============================================================
     let mut budgets_restored: i64 = 0;
@@ -441,6 +582,10 @@ pub async fn restore_from_backup_internal(
         categories_restored,
         transactions_restored,
         budgets_restored,
+        tags_restored,
+        savings_goals_restored,
+        transaction_tags_restored,
+        goal_contributions_restored,
     })
 }
 
@@ -467,6 +612,10 @@ pub async fn clear_all_data(pool: State<'_, SqlitePool>) -> Result<ClearResult, 
 
     // Delete in dependency order (children first)
     let tables_to_clear = [
+        "goal_contributions",
+        "savings_goals",
+        "transaction_tags",
+        "tags",
         "journal_entries",
         "installment_payments",
         "credit_card_statements",
@@ -565,6 +714,10 @@ pub struct RestoreResult {
     pub categories_restored: i64,
     pub transactions_restored: i64,
     pub budgets_restored: i64,
+    pub tags_restored: i64,
+    pub savings_goals_restored: i64,
+    pub transaction_tags_restored: i64,
+    pub goal_contributions_restored: i64,
 }
 
 #[derive(Debug, Serialize)]

@@ -139,7 +139,28 @@ export default function TransactionList({
                     )}
                   </td>
                   <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-400">
-                    {txn.category_name || "-"}
+                    <div className="flex flex-col gap-1">
+                      <span>{txn.category_name || "-"}</span>
+                      {txn.tags && txn.tags.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {txn.tags.slice(0, 2).map((tag) => (
+                            <span
+                              key={tag.id}
+                              className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium text-white shadow-sm"
+                              style={{ backgroundColor: tag.color }}
+                              title={tag.name}
+                            >
+                              {tag.name}
+                            </span>
+                          ))}
+                          {txn.tags.length > 2 && (
+                            <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400">
+                              +{txn.tags.length - 2}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
                     {txn.amount.toFixed(2)}
@@ -223,7 +244,7 @@ export default function TransactionList({
                   {txn.amount.toFixed(2)}
                 </span>
               </div>
-              <div className="text-sm text-gray-900 dark:text-white mb-1">
+              <div className="text-sm text-gray-900 dark:text-white mb-2">
                 {txn.transaction_type === "TRANSFER" ? (
                   <span>
                     {txn.account_name} → {txn.to_account_name}
@@ -234,6 +255,19 @@ export default function TransactionList({
                   </>
                 )}
               </div>
+              {txn.tags && txn.tags.length > 0 && (
+                <div className="flex flex-wrap gap-1 mb-2">
+                  {txn.tags.map((tag) => (
+                    <span
+                      key={tag.id}
+                      className="inline-block px-1.5 py-0.5 rounded text-xs font-medium text-white shadow-sm"
+                      style={{ backgroundColor: tag.color }}
+                    >
+                      {tag.name}
+                    </span>
+                  ))}
+                </div>
+              )}
               {txn.memo && (
                 <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
                   {txn.memo}

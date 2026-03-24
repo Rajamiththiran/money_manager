@@ -461,6 +461,7 @@ pub async fn execute_recurring_transaction(
         to_account_id,
         category_id,
         memo: Some("Auto-generated from recurring transaction".to_string()),
+        tag_ids: None,
     };
 
     let txn_id = crate::commands::transactions::create_transaction(pool.clone(), transaction_input)
@@ -594,6 +595,7 @@ pub async fn process_recurring_transactions(
             to_account_id,
             category_id,
             memo: Some(format!("Auto-generated from recurring transaction")),
+            tag_ids: None,
         };
 
         match crate::commands::transactions::create_transaction(pool.clone(), transaction_input)

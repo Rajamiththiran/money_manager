@@ -1,10 +1,69 @@
 // File: src-tauri/src/commands/transactions.rs
+use crate::models::tag::TagInfo;
 use crate::models::transactions::{
     CategorySpending, CreateTransactionInput, DailySummary, IncomeExpenseSummary, MonthlyTrend,
     Transaction, TransactionFilter, TransactionWithDetails, UpdateTransactionInput,
 };
 use sqlx::{Row, SqlitePool};
 use tauri::State;
+
+/// Load tags for a batch of transaction IDs. Returns a Vec of (transaction_id, TagInfo) pairs.
+async fn load_tags_for_transactions(
+    pool: &SqlitePool,
+    transaction_ids: &[i64],
+) -> Result<Vec<(i64, TagInfo)>, String> {
+    if transaction_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders: Vec<String> = transaction_ids.iter().map(|_| "?".to_string()).collect();
+    let query_str = format!(
+        "SELECT tt.transaction_id, tg.id, tg.name, tg.color
+         FROM transaction_tags tt
+         INNER JOIN tags tg ON tt.tag_id = tg.id
+         WHERE tt.transaction_id IN ({})
+         ORDER BY tg.name ASC",
+        placeholders.join(", ")
+    );
+
+    let mut q = sqlx::query(&query_str);
+    for id in transaction_ids {
+        q = q.bind(id);
+    }
+
+    let rows = q.fetch_all(pool).await.map_err(|e| format!("Failed to load tags: {}", e))?;
+
+    Ok(rows
+        .iter()
+        .map(|row| {
+            (
+                row.get::<i64, _>("transaction_id"),
+                TagInfo {
+                    id: row.get("id"),
+                    name: row.get("name"),
+                    color: row.get("color"),
+                },
+            )
+        })
+        .collect())
+}
+
+/// Insert tag associations for a transaction
+async fn insert_transaction_tags(
+    pool: &SqlitePool,
+    transaction_id: i64,
+    tag_ids: &[i64],
+) -> Result<(), String> {
+    for tag_id in tag_ids {
+        sqlx::query("INSERT OR IGNORE INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)")
+            .bind(transaction_id)
+            .bind(tag_id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Failed to associate tag: {}", e))?;
+    }
+    Ok(())
+}
 
 #[tauri::command]
 pub async fn get_transactions(pool: State<'_, SqlitePool>) -> Result<Vec<Transaction>, String> {
@@ -56,7 +115,8 @@ pub async fn get_transactions_with_details(
     .await
     .map_err(|e| format!("Failed to fetch transactions: {}", e))?;
 
-    Ok(rows
+
+    let results: Vec<TransactionWithDetails> = rows
         .iter()
         .map(|row| TransactionWithDetails {
             transaction: Transaction {
@@ -75,8 +135,28 @@ pub async fn get_transactions_with_details(
             to_account_name: row.get("to_account_name"),
             category_name: row.get("category_name"),
             photo_count: row.get("photo_count"),
+            tags: Vec::new(),
         })
-        .collect())
+        .collect();
+
+    attach_tags(pool.inner(), results).await
+}
+
+// Helper to attach tags to a list of TransactionWithDetails
+async fn attach_tags(
+    pool: &SqlitePool,
+    mut results: Vec<TransactionWithDetails>,
+) -> Result<Vec<TransactionWithDetails>, String> {
+    let ids: Vec<i64> = results.iter().map(|r| r.transaction.id).collect();
+    let tag_pairs = load_tags_for_transactions(pool, &ids).await?;
+    for twd in &mut results {
+        twd.tags = tag_pairs
+            .iter()
+            .filter(|(tid, _)| *tid == twd.transaction.id)
+            .map(|(_, tag)| tag.clone())
+            .collect();
+    }
+    Ok(results)
 }
 
 #[tauri::command]
@@ -233,6 +313,13 @@ pub async fn create_transaction(
         .await
         .map_err(|e| format!("Failed to commit transaction: {}", e))?;
 
+    // Insert tags (outside the DB transaction since the main transaction is committed)
+    if let Some(tag_ids) = &input.tag_ids {
+        if !tag_ids.is_empty() {
+            insert_transaction_tags(pool.inner(), transaction_id, tag_ids).await?;
+        }
+    }
+
     Ok(transaction_id)
 }
 
@@ -287,6 +374,18 @@ pub async fn update_transaction(
         .execute(pool.inner())
         .await
         .map_err(|e| format!("Failed to update transaction: {}", e))?;
+
+    // Replace tags if provided
+    if let Some(tag_ids) = &input.tag_ids {
+        sqlx::query("DELETE FROM transaction_tags WHERE transaction_id = ?")
+            .bind(input.id)
+            .execute(pool.inner())
+            .await
+            .map_err(|e| format!("Failed to clear old tags: {}", e))?;
+        if !tag_ids.is_empty() {
+            insert_transaction_tags(pool.inner(), input.id, tag_ids).await?;
+        }
+    }
 
     Ok(())
 }
@@ -372,6 +471,17 @@ pub async fn get_transactions_filtered(
         ));
     }
 
+    // Tag filter (OR logic: matches ANY selected tag)
+    if let Some(tag_ids) = &filter.tag_ids {
+        if !tag_ids.is_empty() {
+            let id_list: Vec<String> = tag_ids.iter().map(|id| id.to_string()).collect();
+            query.push_str(&format!(
+                " AND t.id IN (SELECT transaction_id FROM transaction_tags WHERE tag_id IN ({}))",
+                id_list.join(", ")
+            ));
+        }
+    }
+
     query.push_str(" ORDER BY t.date DESC, t.created_at DESC");
 
     let rows = sqlx::query(&query)
@@ -379,7 +489,7 @@ pub async fn get_transactions_filtered(
         .await
         .map_err(|e| format!("Failed to fetch filtered transactions: {}", e))?;
 
-    Ok(rows
+    let results: Vec<TransactionWithDetails> = rows
         .iter()
         .map(|row| TransactionWithDetails {
             transaction: Transaction {
@@ -398,8 +508,11 @@ pub async fn get_transactions_filtered(
             to_account_name: row.get("to_account_name"),
             category_name: row.get("category_name"),
             photo_count: row.get("photo_count"),
+            tags: Vec::new(),
         })
-        .collect())
+        .collect();
+
+    attach_tags(pool.inner(), results).await
 }
 
 #[tauri::command]
@@ -552,7 +665,7 @@ pub async fn search_transactions(
     .await
     .map_err(|e| format!("Failed to search transactions: {}", e))?;
 
-    Ok(rows
+    let results: Vec<TransactionWithDetails> = rows
         .iter()
         .map(|row| TransactionWithDetails {
             transaction: Transaction {
@@ -571,8 +684,11 @@ pub async fn search_transactions(
             to_account_name: row.get("to_account_name"),
             category_name: row.get("category_name"),
             photo_count: row.get("photo_count"),
+            tags: Vec::new(),
         })
-        .collect())
+        .collect();
+
+    attach_tags(pool.inner(), results).await
 }
 
 // ==================== PHASE 6: REPORTS & ANALYTICS ====================

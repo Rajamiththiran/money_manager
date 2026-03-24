@@ -20,6 +20,7 @@ export interface CreateTransactionInput {
   to_account_id: number | null;
   category_id: number | null;
   memo: string | null;
+  tag_ids?: number[];
 }
 
 export interface UpdateTransactionInput {
@@ -28,6 +29,7 @@ export interface UpdateTransactionInput {
   amount?: number;
   category_id?: number;
   memo?: string;
+  tag_ids?: number[];
 }
 
 export interface TransactionWithDetails {
@@ -45,6 +47,7 @@ export interface TransactionWithDetails {
   to_account_name: string | null;
   category_name: string | null;
   photo_count: number;
+  tags: { id: number; name: string; color: string }[];
 }
 
 export interface PhotoInfo {
@@ -64,6 +67,7 @@ export interface TransactionFilter {
   category_id?: number;
   search_query?: string;
   include_subcategories?: boolean;
+  tag_ids?: number[];
 }
 
 export interface IncomeExpenseSummary {

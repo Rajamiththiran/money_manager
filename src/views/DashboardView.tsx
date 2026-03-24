@@ -13,6 +13,7 @@ import Calendar from "../components/Calendar";
 import QuickAddBar from "../components/QuickAddBar";
 import NetWorthCard from "../components/NetWorthCard";
 import UpcomingBillsWidget from "../components/UpcomingBillsWidget";
+import GoalsDashboardWidget from "../components/GoalsDashboardWidget";
 import type { AccountWithBalance } from "../types/account";
 import type { TransactionWithDetails } from "../types/transaction";
 
@@ -224,6 +225,9 @@ export default function DashboardView() {
 
       {/* Upcoming Bills Widget */}
       <UpcomingBillsWidget onBillAction={handleTransactionAdded} />
+
+      {/* Savings Goals Widget */}
+      <GoalsDashboardWidget />
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">

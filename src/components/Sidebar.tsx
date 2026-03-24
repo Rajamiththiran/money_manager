@@ -13,6 +13,7 @@ import {
   CameraIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  TrophyIcon,
 } from "@heroicons/react/24/outline";
 import ThemeToggle from "./ThemeToggle";
 import type { View } from "../types/navigation";
@@ -30,6 +31,7 @@ const menuItems: { id: View; label: string; icon: React.ElementType }[] = [
   { id: "transactions", label: "Transactions", icon: BanknotesIcon },
   { id: "receipts", label: "Receipts", icon: CameraIcon },
   { id: "budgets", label: "Budgets", icon: ChartPieIcon },
+  { id: "goals", label: "Goals", icon: TrophyIcon },
   { id: "credit-cards", label: "Credit Cards", icon: CreditCardIcon },
   { id: "advanced", label: "Advanced", icon: WrenchScrewdriverIcon },
   { id: "reports", label: "Reports", icon: DocumentChartBarIcon },

@@ -6,6 +6,7 @@ export type View =
   | "transactions"
   | "receipts"
   | "budgets"
+  | "goals"
   | "credit-cards"
   | "advanced"
   | "reports"

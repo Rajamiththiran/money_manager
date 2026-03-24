@@ -5,6 +5,7 @@ pub mod budget;
 pub mod category;
 pub mod credit_card;
 pub mod currency;
+pub mod goal;
 pub mod installment;
 pub mod networth;
 pub mod recurring;

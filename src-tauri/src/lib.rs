@@ -179,6 +179,17 @@ pub fn run() {
             commands::bills::get_overdue_bill_count,
             commands::bills::skip_bill_occurrence,
             commands::bills::pay_bill_now,
+            // Goals commands
+            commands::goals::create_goal,
+            commands::goals::get_goals,
+            commands::goals::get_goal_progress,
+            commands::goals::update_goal,
+            commands::goals::delete_goal,
+            commands::goals::add_goal_contribution,
+            commands::goals::complete_goal,
+            commands::goals::pause_goal,
+            commands::goals::resume_goal,
+            commands::goals::archive_goal,
             // Security commands
             commands::security::set_pin,
             commands::security::verify_pin,

@@ -17,6 +17,7 @@ import CreditCardsView from "./views/CreditCardsView";
 import AdvancedView from "./views/AdvancedView";
 import ReportsView from "./views/ReportsView";
 import SettingsView from "./views/SettingsView";
+import GoalsView from "./views/GoalsView";
 import type { View } from "./types/navigation";
 
 function AppContent() {
@@ -190,6 +191,8 @@ function AppContent() {
         return <ReceiptsView />;
       case "budgets":
         return <BudgetView />;
+      case "goals":
+        return <GoalsView />;
       case "credit-cards":
         return <CreditCardsView />;
       case "advanced":

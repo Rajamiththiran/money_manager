@@ -7,6 +7,7 @@ pub mod categories;
 pub mod credit_cards;
 pub mod currencies;
 pub mod export;
+pub mod goals;
 pub mod installments;
 pub mod networth;
 pub mod photos;

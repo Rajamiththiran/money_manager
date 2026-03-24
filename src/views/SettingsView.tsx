@@ -30,6 +30,7 @@ import {
   ToggleRight,
   Archive,
   Image,
+  Tag as TagIcon,
 } from "lucide-react";
 import { useTheme } from "../contexts/ThemeContext";
 import { useAccentColor } from "../contexts/AccentColorContext";
@@ -37,6 +38,7 @@ import { useFontSize } from "../contexts/FontSizeContext";
 import { useToast } from "../components/Toast";
 import Button from "../components/Button";
 import Select from "../components/Select";
+import SettingsTags from "../components/SettingsTags";
 
 // ——— Settings Types ———————————————————————————————
 interface AppSettings {
@@ -903,6 +905,15 @@ export default function SettingsView() {
             options={START_OF_MONTH_OPTIONS}
           />
         </SettingRow>
+      </SettingSection>
+
+      {/* ═══ Tags Management ═══ */}
+      <SettingSection
+        icon={<TagIcon className="w-5 h-5 text-gray-600 dark:text-gray-300" />}
+        title="Tags"
+        description="Manage tags for cross-category labeling (e.g., trips, projects)"
+      >
+        <SettingsTags />
       </SettingSection>
 
       {/* ═══ Appearance ═══ */}

@@ -9,5 +9,6 @@ pub mod goal;
 pub mod installment;
 pub mod networth;
 pub mod recurring;
+pub mod tag;
 pub mod template;
 pub mod transactions;

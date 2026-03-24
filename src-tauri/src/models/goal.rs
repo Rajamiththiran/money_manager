@@ -31,6 +31,7 @@ pub struct GoalWithProgress {
     pub goal: SavingsGoal,
     pub progress: GoalProgress,
     pub linked_account_name: Option<String>,
+    pub linked_account_balance: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

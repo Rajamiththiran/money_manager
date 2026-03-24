@@ -78,21 +78,31 @@ pub async fn get_goals(
     for row in &goals {
         let goal = row_to_goal(row);
         let progress = calculate_progress(pool.inner(), &goal).await?;
-        let linked_account_name = if let Some(account_id) = goal.linked_account_id {
-            sqlx::query("SELECT name FROM accounts WHERE id = ?")
-                .bind(account_id)
-                .fetch_optional(pool.inner())
-                .await
-                .ok()
-                .flatten()
-                .map(|r| r.get::<String, _>("name"))
+        let (linked_account_name, linked_account_balance) = if let Some(account_id) = goal.linked_account_id {
+            let acc_row = sqlx::query(
+                "SELECT a.name, a.initial_balance +
+                        COALESCE((SELECT SUM(je.debit - je.credit) FROM journal_entries je
+                                  INNER JOIN transactions t ON je.transaction_id = t.id
+                                  WHERE je.account_id = a.id), 0.0) as balance
+                 FROM accounts a WHERE a.id = ?",
+            )
+            .bind(account_id)
+            .fetch_optional(pool.inner())
+            .await
+            .ok()
+            .flatten();
+            match acc_row {
+                Some(r) => (Some(r.get::<String, _>("name")), Some(r.get::<f64, _>("balance"))),
+                None => (None, None),
+            }
         } else {
-            None
+            (None, None)
         };
         results.push(GoalWithProgress {
             goal,
             progress,
             linked_account_name,
+            linked_account_balance,
         });
     }
 
@@ -186,10 +196,6 @@ pub async fn add_goal_contribution(
     input: AddContributionInput,
 ) -> Result<GoalContribution, String> {
     let goal = get_goal_by_id(pool.inner(), input.goal_id).await?;
-
-    if goal.linked_account_id.is_some() {
-        return Err("Cannot add manual contributions to an account-linked goal. The progress is tracked automatically from the account balance.".to_string());
-    }
 
     if goal.status != "ACTIVE" {
         return Err(format!("Cannot add contributions to a {} goal", goal.status.to_lowercase()));
@@ -309,34 +315,16 @@ async fn get_goal_by_id(pool: &SqlitePool, goal_id: i64) -> Result<SavingsGoal, 
 async fn calculate_progress(pool: &SqlitePool, goal: &SavingsGoal) -> Result<GoalProgress, String> {
     let today = chrono::Local::now().naive_local().date();
 
-    // Calculate current amount based on goal type
-    let current_amount = if let Some(account_id) = goal.linked_account_id {
-        // Linked goal: current = account balance
-        let row = sqlx::query(
-            "SELECT a.initial_balance +
-                    COALESCE((SELECT SUM(je.debit - je.credit) FROM journal_entries je
-                              INNER JOIN transactions t ON je.transaction_id = t.id
-                              WHERE je.account_id = a.id), 0.0) as balance
-             FROM accounts a WHERE a.id = ?",
-        )
-        .bind(account_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| format!("Failed to get account balance: {}", e))?;
+    // All goals (linked or unlinked) use manual contributions for progress
+    let row = sqlx::query(
+        "SELECT COALESCE(SUM(amount), 0.0) as total FROM goal_contributions WHERE goal_id = ?",
+    )
+    .bind(goal.id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("Failed to sum contributions: {}", e))?;
 
-        row.map(|r| r.get::<f64, _>("balance")).unwrap_or(0.0)
-    } else {
-        // Unlinked goal: current = sum of contributions
-        let row = sqlx::query(
-            "SELECT COALESCE(SUM(amount), 0.0) as total FROM goal_contributions WHERE goal_id = ?",
-        )
-        .bind(goal.id)
-        .fetch_one(pool)
-        .await
-        .map_err(|e| format!("Failed to sum contributions: {}", e))?;
-
-        row.get::<f64, _>("total")
-    };
+    let current_amount: f64 = row.get("total");
 
     let percentage = if goal.target_amount > 0.0 {
         ((current_amount / goal.target_amount) * 100.0).min(100.0).max(0.0)

@@ -21,6 +21,7 @@ interface GoalWithProgress {
   status: string;
   progress: GoalProgress;
   linked_account_name: string | null;
+  linked_account_balance: number | null;
 }
 
 const ICON_MAP: Record<string, string> = {

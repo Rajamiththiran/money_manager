@@ -28,6 +28,7 @@ interface GoalWithProgress {
   updated_at: string;
   progress: GoalProgress;
   linked_account_name: string | null;
+  linked_account_balance: number | null;
 }
 
 type StatusFilter = "ALL" | "ACTIVE" | "PAUSED" | "COMPLETED" | "ARCHIVED";

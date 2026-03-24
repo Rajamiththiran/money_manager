@@ -35,6 +35,7 @@ interface GoalWithProgress {
   updated_at: string;
   progress: GoalProgress;
   linked_account_name: string | null;
+  linked_account_balance: number | null;
 }
 
 interface GoalCardProps {
@@ -218,9 +219,23 @@ export default function GoalCard({
           )}
         </div>
 
+        {/* Linked account reference balance */}
+        {goal.linked_account_name && goal.linked_account_balance !== null && (
+          <div className="flex items-center justify-between px-3 py-2 mb-3 rounded-lg bg-gray-50 dark:bg-gray-700/50 text-xs">
+            <span className="text-gray-500 dark:text-gray-400">
+              {goal.linked_account_name} balance
+            </span>
+            <span className="font-medium text-gray-700 dark:text-gray-300">
+              Rs {goal.linked_account_balance.toLocaleString("en-US", {
+                minimumFractionDigits: 2, maximumFractionDigits: 2,
+              })}
+            </span>
+          </div>
+        )}
+
         {/* Action buttons */}
         <div className="flex items-center gap-1.5 pt-3 border-t border-gray-100 dark:border-gray-700">
-          {goal.status === "ACTIVE" && !goal.linked_account_id && (
+          {goal.status === "ACTIVE" && (
             <button
               onClick={() => onAddContribution(goal)}
               className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-accent-50 dark:bg-accent-900/20 text-accent-600 dark:text-accent-400 hover:bg-accent-100 dark:hover:bg-accent-900/30 transition-colors"

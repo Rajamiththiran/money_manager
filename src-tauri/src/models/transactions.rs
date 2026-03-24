@@ -1,4 +1,5 @@
 // File: src-tauri/src/models/transactions.rs
+use crate::models::tag::TagInfo;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -24,6 +25,7 @@ pub struct CreateTransactionInput {
     pub to_account_id: Option<i64>,
     pub category_id: Option<i64>,
     pub memo: Option<String>,
+    pub tag_ids: Option<Vec<i64>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +35,7 @@ pub struct UpdateTransactionInput {
     pub amount: Option<f64>,
     pub category_id: Option<i64>,
     pub memo: Option<String>,
+    pub tag_ids: Option<Vec<i64>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -43,6 +46,7 @@ pub struct TransactionWithDetails {
     pub to_account_name: Option<String>,
     pub category_name: Option<String>,
     pub photo_count: i64,
+    pub tags: Vec<TagInfo>,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,6 +70,7 @@ pub struct TransactionFilter {
     pub category_id: Option<i64>,
     pub search_query: Option<String>,
     pub include_subcategories: Option<bool>, // For category filtering
+    pub tag_ids: Option<Vec<i64>>,
 }
 
 #[derive(Debug, Serialize)]

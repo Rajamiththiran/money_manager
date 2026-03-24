@@ -415,6 +415,7 @@ async fn get_export_transactions(
             to_account_name: row.get("to_account_name"),
             category_name: row.get("category_name"),
             photo_count: row.get("photo_count"),
+            tags: Vec::new(),
         })
         .collect())
 }

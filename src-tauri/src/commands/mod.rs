@@ -15,5 +15,6 @@ pub mod recurring;
 pub mod scheduled_backup;
 pub mod security;
 pub mod settings;
+pub mod tags;
 pub mod templates;
 pub mod transactions;

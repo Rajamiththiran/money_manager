@@ -14,6 +14,7 @@ import ComparisonCard from "../components/ComparisonCard";
 import ReportTable from "../components/ReportTable";
 import ExportMenu from "../components/ExportMenu";
 import CategorySpendingChart from "../components/CategorySpendingChart";
+import TagSpendingChart from "../components/TagSpendingChart";
 import AccountActivityCard from "../components/AccountActivityCard";
 import NetWorthChart from "../components/NetWorthChart";
 import type {
@@ -52,6 +53,7 @@ export default function ReportsView() {
   );
   const [accounts, setAccounts] = useState<AccountWithBalance[]>([]);
   const [loading, setLoading] = useState(true);
+  const [groupBy, setGroupBy] = useState<"category" | "tag">("category");
 
   useEffect(() => {
     loadReportData();
@@ -417,31 +419,76 @@ export default function ReportsView() {
             </div>
           )}
 
-          {/* Categories Tab */}
+          {/* Categories/Tags Tab */}
           {activeTab === "categories" && (
-            <div className="space-y-8">
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
-                    Spending by Category
-                  </h3>
-                  <CategorySpendingChart
-                    startDate={filters.startDate}
-                    endDate={filters.endDate}
-                    transactionType="EXPENSE"
-                  />
-                </div>
-                <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
-                    Income by Category
-                  </h3>
-                  <CategorySpendingChart
-                    startDate={filters.startDate}
-                    endDate={filters.endDate}
-                    transactionType="INCOME"
-                  />
+            <div className="space-y-6">
+              <div className="flex justify-end">
+                <div className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 p-1 bg-gray-50 dark:bg-gray-800/50">
+                  <button
+                    onClick={() => setGroupBy("category")}
+                    className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                      groupBy === "category"
+                        ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm"
+                        : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
+                    }`}
+                  >
+                    Group by Category
+                  </button>
+                  <button
+                    onClick={() => setGroupBy("tag")}
+                    className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                      groupBy === "tag"
+                        ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm"
+                        : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
+                    }`}
+                  >
+                    Group by Tag
+                  </button>
                 </div>
               </div>
+
+              {groupBy === "category" ? (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+                      Spending by Category
+                    </h3>
+                    <CategorySpendingChart
+                      startDate={filters.startDate}
+                      endDate={filters.endDate}
+                      transactionType="EXPENSE"
+                    />
+                  </div>
+                  <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+                      Income by Category
+                    </h3>
+                    <CategorySpendingChart
+                      startDate={filters.startDate}
+                      endDate={filters.endDate}
+                      transactionType="INCOME"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+                      Spending by Tag
+                    </h3>
+                    <TagSpendingChart
+                      startDate={filters.startDate}
+                      endDate={filters.endDate}
+                    />
+                  </div>
+                  {/* Tags typically don't have income in this simplified setup, 
+                      but we leave an empty placeholder or explanatory block for balance */}
+                  <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700 flex flex-col items-center justify-center text-center">
+                     <p className="text-gray-500 dark:text-gray-400 mb-2">Tag Income module disabled</p>
+                     <p className="text-sm text-gray-400 dark:text-gray-500">Tags are primarily designed to track spending for events and projects.</p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

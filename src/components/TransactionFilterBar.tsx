@@ -7,9 +7,13 @@ import {
 } from "@heroicons/react/24/outline";
 import Select from "./Select";
 import CascadingCategorySelect from "./CascadingCategorySelect";
+import TagPicker from "./TagPicker";
+import { invoke } from "@tauri-apps/api/core";
+import { useEffect } from "react";
 import type { TransactionFilter } from "../types/transaction";
 import type { AccountWithBalance } from "../types/account";
 import type { CategoryWithChildren } from "../types/category";
+import type { Tag } from "../types/tag";
 
 interface TransactionFilterBarProps {
   accounts: AccountWithBalance[];
@@ -31,7 +35,14 @@ export default function TransactionFilterBar({
   const [type, setType] = useState<string>("");
   const [accountId, setAccountId] = useState<string>("");
   const [categoryId, setCategoryId] = useState<string>("");
+  const [tagIds, setTagIds] = useState<number[]>([]);
+  const [allTags, setAllTags] = useState<Tag[]>([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Load tags on mount
+  useEffect(() => {
+    invoke<Tag[]>("get_tags").then(setAllTags).catch(console.error);
+  }, []);
 
   const buildFilter = (
     overrides: Partial<{
@@ -42,6 +53,7 @@ export default function TransactionFilterBar({
       type: string;
       accountId: string;
       categoryId: string;
+      tagIds: number[];
     }> = {},
   ): TransactionFilter => {
     const s = overrides.search ?? search;
@@ -51,6 +63,7 @@ export default function TransactionFilterBar({
     const t = overrides.type ?? type;
     const a = overrides.accountId ?? accountId;
     const c = overrides.categoryId ?? categoryId;
+    const tags = overrides.tagIds ?? tagIds;
 
     const filter: TransactionFilter = {};
 
@@ -95,6 +108,7 @@ export default function TransactionFilterBar({
       filter.category_id = Number(c);
       filter.include_subcategories = true;
     }
+    if (tags.length > 0) filter.tag_ids = tags;
     if (s.trim()) filter.search_query = s.trim();
 
     return filter;
@@ -130,6 +144,11 @@ export default function TransactionFilterBar({
     applyFilter({ categoryId: value });
   };
 
+  const handleTagsChange = (ids: number[]) => {
+    setTagIds(ids);
+    applyFilter({ tagIds: ids });
+  };
+
   const handleCustomDateChange = (start: string, end: string) => {
     setCustomStart(start);
     setCustomEnd(end);
@@ -144,6 +163,7 @@ export default function TransactionFilterBar({
     setType("");
     setAccountId("");
     setCategoryId("");
+    setTagIds([]);
     setShowAdvanced(false);
     onFilterChange(
       buildFilter({
@@ -154,12 +174,13 @@ export default function TransactionFilterBar({
         type: "",
         accountId: "",
         categoryId: "",
+        tagIds: [],
       }),
     );
   };
 
   const hasActiveFilters =
-    type !== "" || accountId !== "" || categoryId !== "" || search !== "";
+    type !== "" || accountId !== "" || categoryId !== "" || tagIds.length > 0 || search !== "";
 
   const accountOptions = [
     { value: "", label: "All Accounts" },
@@ -286,6 +307,14 @@ export default function TransactionFilterBar({
               onChange={(id) => handleCategoryChange(id === 0 ? "" : id.toString())}
               placeholder="All Categories"
               allowClear={true}
+            />
+          </div>
+          <div className="flex-1 min-w-0 flex items-center bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg px-2 text-sm shadow-sm h-[38px]">
+            <span className="text-gray-500 mr-2 border-r border-gray-200 dark:border-gray-700 pr-2">Tags</span>
+            <TagPicker
+              tags={allTags}
+              selectedIds={tagIds}
+              onChange={handleTagsChange}
             />
           </div>
         </div>

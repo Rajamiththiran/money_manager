@@ -7,9 +7,12 @@ import QuickCategoryModal from "./QuickCategoryModal";
 import Button from "./Button";
 import Calculator from "./Calculator";
 import { PhotoPicker } from "./PhotoAttachment";
+import TagPicker from "./TagPicker";
+import { invoke } from "@tauri-apps/api/core";
 import type { CreateTransactionInput } from "../types/transaction";
 import type { AccountWithBalance } from "../types/account";
 import type { CategoryWithChildren } from "../types/category";
+import type { Tag } from "../types/tag";
 
 interface TransactionFormProps {
   accounts: AccountWithBalance[];
@@ -55,6 +58,13 @@ export default function TransactionForm({
   const [error, setError] = useState<string | null>(null);
   const [showCalculator, setShowCalculator] = useState(false);
   const [showQuickCategory, setShowQuickCategory] = useState(false);
+  const [allTags, setAllTags] = useState<Tag[]>([]);
+  const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
+
+  // Load tags on mount
+  useEffect(() => {
+    invoke<Tag[]>("get_tags").then(setAllTags).catch(console.error);
+  }, []);
 
   // React to prefillData changes (template usage or initial load)
   useEffect(() => {
@@ -110,6 +120,7 @@ export default function TransactionForm({
             ? formData.category_id
             : null,
         memo: formData.memo || null,
+        tag_ids: selectedTagIds.length > 0 ? selectedTagIds : undefined,
       };
 
       // Validation
@@ -133,6 +144,7 @@ export default function TransactionForm({
         memo: "",
       });
       setPendingPhotoPaths([]);
+      setSelectedTagIds([]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -318,6 +330,18 @@ export default function TransactionForm({
           selectedPaths={pendingPhotoPaths}
           onSelect={setPendingPhotoPaths}
         />
+
+        {/* Tags */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Tags (Optional)
+          </label>
+          <TagPicker
+            tags={allTags}
+            selectedIds={selectedTagIds}
+            onChange={setSelectedTagIds}
+          />
+        </div>
 
         {/* Actions */}
         <div className="flex gap-3 pt-4">

@@ -190,6 +190,12 @@ pub fn run() {
             commands::goals::pause_goal,
             commands::goals::resume_goal,
             commands::goals::archive_goal,
+            // Tag commands
+            commands::tags::create_tag,
+            commands::tags::get_tags,
+            commands::tags::update_tag,
+            commands::tags::delete_tag,
+            commands::tags::get_spending_by_tag,
             // Security commands
             commands::security::set_pin,
             commands::security::verify_pin,

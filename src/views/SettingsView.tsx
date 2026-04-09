@@ -31,6 +31,7 @@ import {
   Archive,
   Image,
   Tag as TagIcon,
+  FileSpreadsheet,
 } from "lucide-react";
 import { useTheme } from "../contexts/ThemeContext";
 import { useAccentColor } from "../contexts/AccentColorContext";
@@ -39,6 +40,7 @@ import { useToast } from "../components/Toast";
 import Button from "../components/Button";
 import Select from "../components/Select";
 import SettingsTags from "../components/SettingsTags";
+import ImportWizard from "../components/ImportWizard";
 
 // ——— Settings Types ———————————————————————————————
 interface AppSettings {
@@ -248,6 +250,7 @@ export default function SettingsView() {
   const [isBackingUp, setIsBackingUp] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
+  const [showImportWizard, setShowImportWizard] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [lastBackupDate, setLastBackupDate] = useState<string | null>(() => {
     return localStorage.getItem("lastBackupDate");
@@ -1071,7 +1074,7 @@ export default function SettingsView() {
         </div>
 
         {/* Action Buttons */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <button
             onClick={handleBackup}
             disabled={isBackingUp}
@@ -1122,6 +1125,23 @@ export default function SettingsView() {
               </p>
               <p className="text-xs text-red-500 dark:text-red-400">
                 Permanently delete everything
+              </p>
+            </div>
+          </button>
+
+          <button
+            onClick={() => setShowImportWizard(true)}
+            className="flex items-center gap-3 p-4 rounded-lg border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors text-left"
+          >
+            <div className="p-2 rounded-lg bg-amber-100 dark:bg-amber-900/30">
+              <FileSpreadsheet className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-gray-900 dark:text-white">
+                Import CSV
+              </p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Migrate from other apps
               </p>
             </div>
           </button>
@@ -1697,6 +1717,17 @@ export default function SettingsView() {
           </Button>
         </div>
       </div>
+
+      {/* CSV Import Wizard Modal */}
+      {showImportWizard && (
+        <ImportWizard
+          onClose={() => setShowImportWizard(false)}
+          onComplete={() => {
+            setShowImportWizard(false);
+            loadDbStats();
+          }}
+        />
+      )}
     </div>
   );
 }

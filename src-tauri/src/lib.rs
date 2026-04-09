@@ -210,6 +210,13 @@ pub fn run() {
             commands::photos::get_transaction_photos,
             commands::photos::cleanup_orphaned_photos,
             commands::photos::save_photo_to,
+            // Import commands
+            commands::import::parse_csv_preview,
+            commands::import::validate_import_mapping,
+            commands::import::get_import_matches,
+            commands::import::execute_import,
+            commands::import::undo_import,
+            commands::import::get_import_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

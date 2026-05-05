@@ -1,4 +1,4 @@
-#File: src-tauri/Cargo.toml
+#File: src-tauri/Cargo.toml m
 [package]
 name = "money_manager"
 version = "1.0.1"

@@ -1,253 +1,276 @@
 // File: src-tauri/src/commands/categories.rs
-use crate::models::category::{
-    Category, CategoryWithChildren, CreateCategoryInput, UpdateCategoryInput,
-};
-use sqlx::{Row, SqlitePool};
+use crate::models::category::{Category, CategoryWithChildren, CreateCategoryInput};
+use crate::AppState;
+use rusqlite::params;
 use tauri::State;
 
 #[tauri::command]
-pub async fn get_categories(pool: State<'_, SqlitePool>) -> Result<Vec<Category>, String> {
-    let rows = sqlx::query("SELECT id, parent_id, name, type FROM categories ORDER BY type, name")
-        .fetch_all(pool.inner())
-        .await
-        .map_err(|e| format!("Failed to fetch categories: {}", e))?;
+pub fn get_categories(state: State<'_, AppState>) -> Result<Vec<Category>, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    Ok(rows
-        .iter()
-        .map(|row| Category {
-            id: row.get("id"),
-            parent_id: row.get("parent_id"),
-            name: row.get("name"),
-            category_type: row.get("type"),
-        })
-        .collect())
-}
+    let mut stmt = conn
+        .prepare("SELECT id, parent_id, name, type FROM categories ORDER BY name")
+        .map_err(|e| format!("Query error: {}", e))?;
 
-#[tauri::command]
-pub async fn get_categories_with_children(
-    pool: State<'_, SqlitePool>,
-) -> Result<Vec<CategoryWithChildren>, String> {
-    // Get all parent categories (where parent_id IS NULL)
-    let parent_rows = sqlx::query(
-        "SELECT id, parent_id, name, type FROM categories WHERE parent_id IS NULL ORDER BY type, name"
-    )
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch parent categories: {}", e))?;
-
-    let mut results = Vec::new();
-
-    for parent_row in parent_rows.iter() {
-        let parent_id: i64 = parent_row.get("id");
-        let parent = Category {
-            id: parent_id,
-            parent_id: parent_row.get("parent_id"),
-            name: parent_row.get("name"),
-            category_type: parent_row.get("type"),
-        };
-
-        // Get children for this parent
-        let child_rows = sqlx::query(
-            "SELECT id, parent_id, name, type FROM categories WHERE parent_id = ? ORDER BY name",
-        )
-        .bind(parent_id)
-        .fetch_all(pool.inner())
-        .await
-        .map_err(|e| format!("Failed to fetch child categories: {}", e))?;
-
-        let children: Vec<Category> = child_rows
-            .iter()
-            .map(|row| Category {
-                id: row.get("id"),
-                parent_id: row.get("parent_id"),
-                name: row.get("name"),
-                category_type: row.get("type"),
+    let cats = stmt
+        .query_map([], |row| {
+            Ok(Category {
+                id: row.get(0)?,
+                parent_id: row.get(1)?,
+                name: row.get(2)?,
+                category_type: row.get(3)?,
             })
-            .collect();
-
-        results.push(CategoryWithChildren {
-            category: parent,
-            children,
-        });
-    }
-
-    Ok(results)
-}
-
-/// Returns the N most recently used categories, filtered by transaction type.
-/// Queries the transactions table to find categories ordered by last-used date.
-#[tauri::command]
-pub async fn get_recent_categories(
-    pool: State<'_, SqlitePool>,
-    limit: i64,
-    transaction_type: String,
-) -> Result<Vec<Category>, String> {
-    // Validate transaction_type
-    if transaction_type != "INCOME" && transaction_type != "EXPENSE" {
-        return Err("transaction_type must be INCOME or EXPENSE".to_string());
-    }
-
-    // Validate limit
-    if limit <= 0 || limit > 50 {
-        return Err("limit must be between 1 and 50".to_string());
-    }
-
-    let rows = sqlx::query(
-        "SELECT c.id, c.parent_id, c.name, c.type
-         FROM categories c
-         INNER JOIN (
-             SELECT category_id, MAX(date) as last_used
-             FROM transactions
-             WHERE transaction_type = ? AND category_id IS NOT NULL
-             GROUP BY category_id
-         ) t ON c.id = t.category_id
-         ORDER BY t.last_used DESC
-         LIMIT ?",
-    )
-    .bind(&transaction_type)
-    .bind(limit)
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch recent categories: {}", e))?;
-
-    Ok(rows
-        .iter()
-        .map(|row| Category {
-            id: row.get("id"),
-            parent_id: row.get("parent_id"),
-            name: row.get("name"),
-            category_type: row.get("type"),
         })
-        .collect())
+        .map_err(|e| format!("Failed to fetch categories: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Read error: {}", e))?;
+
+    Ok(cats)
 }
 
 #[tauri::command]
-pub async fn create_category(
-    pool: State<'_, SqlitePool>,
+pub fn get_categories_with_children(
+    state: State<'_, AppState>,
+) -> Result<Vec<CategoryWithChildren>, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    // Get all categories
+    let mut stmt = conn
+        .prepare("SELECT id, parent_id, name, type FROM categories ORDER BY name")
+        .map_err(|e| format!("Query error: {}", e))?;
+
+    let all_cats: Vec<Category> = stmt
+        .query_map([], |row| {
+            Ok(Category {
+                id: row.get(0)?,
+                parent_id: row.get(1)?,
+                name: row.get(2)?,
+                category_type: row.get(3)?,
+            })
+        })
+        .map_err(|e| format!("Failed to fetch categories: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Read error: {}", e))?;
+
+    // Build parent → children structure
+    let parents: Vec<&Category> = all_cats.iter().filter(|c| c.parent_id.is_none()).collect();
+
+    let result: Vec<CategoryWithChildren> = parents
+        .iter()
+        .map(|parent| {
+            let children: Vec<Category> = all_cats
+                .iter()
+                .filter(|c| c.parent_id == Some(parent.id))
+                .cloned()
+                .collect();
+
+            CategoryWithChildren {
+                category: (*parent).clone(),
+                children,
+            }
+        })
+        .collect();
+
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn create_category(
+    state: State<'_, AppState>,
     input: CreateCategoryInput,
-) -> Result<i64, String> {
-    // Validate category type
+) -> Result<Category, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    // Validate type
     if input.category_type != "INCOME" && input.category_type != "EXPENSE" {
         return Err("Category type must be INCOME or EXPENSE".to_string());
     }
 
-    // If parent_id is provided, validate it exists
+    // Validate parent exists if provided
     if let Some(parent_id) = input.parent_id {
-        let parent_exists = sqlx::query("SELECT id FROM categories WHERE id = ?")
-            .bind(parent_id)
-            .fetch_optional(pool.inner())
-            .await
-            .map_err(|e| format!("Database error: {}", e))?
-            .is_some();
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM categories WHERE id = ?1",
+                params![parent_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false);
 
-        if !parent_exists {
-            return Err("Parent category does not exist".to_string());
+        if !exists {
+            return Err("Parent category not found".to_string());
         }
     }
 
-    let result = sqlx::query("INSERT INTO categories (parent_id, name, type) VALUES (?, ?, ?)")
-        .bind(input.parent_id)
-        .bind(input.name)
-        .bind(input.category_type)
-        .execute(pool.inner())
-        .await
-        .map_err(|e| format!("Failed to create category: {}", e))?;
+    conn.execute(
+        "INSERT INTO categories (parent_id, name, type) VALUES (?1, ?2, ?3)",
+        params![input.parent_id, input.name, input.category_type],
+    )
+    .map_err(|e| format!("Failed to create category: {}", e))?;
 
-    Ok(result.last_insert_rowid())
+    let cat_id = conn.last_insert_rowid();
+
+    let cat = conn
+        .query_row(
+            "SELECT id, parent_id, name, type FROM categories WHERE id = ?1",
+            params![cat_id],
+            |row| {
+                Ok(Category {
+                    id: row.get(0)?,
+                    parent_id: row.get(1)?,
+                    name: row.get(2)?,
+                    category_type: row.get(3)?,
+                })
+            },
+        )
+        .map_err(|e| format!("Failed to fetch created category: {}", e))?;
+
+    Ok(cat)
 }
 
 #[tauri::command]
-pub async fn update_category(
-    pool: State<'_, SqlitePool>,
-    input: UpdateCategoryInput,
+pub fn update_category(
+    state: State<'_, AppState>,
+    id: i64,
+    name: Option<String>,
+    parent_id: Option<i64>,
 ) -> Result<(), String> {
-    // Check if category exists
-    let exists = sqlx::query("SELECT id FROM categories WHERE id = ?")
-        .bind(input.id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?
-        .is_some();
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    if !exists {
-        return Err("Category not found".to_string());
+    let mut set_clauses: Vec<String> = Vec::new();
+
+    if let Some(ref n) = name {
+        set_clauses.push(format!("name = '{}'", n.replace('\'', "''")));
     }
 
-    // Build dynamic update query
-    let mut updates = Vec::new();
-    let mut query = String::from("UPDATE categories SET ");
-
-    if let Some(name) = &input.name {
-        updates.push(format!("name = '{}'", name));
-    }
-
-    if let Some(parent_id) = input.parent_id {
-        // Validate parent exists and prevent circular reference
-        if parent_id == input.id {
-            return Err("Category cannot be its own parent".to_string());
+    if let Some(pid) = parent_id {
+        if pid == id {
+            return Err("A category cannot be its own parent".to_string());
         }
-
-        let parent_exists = sqlx::query("SELECT id FROM categories WHERE id = ?")
-            .bind(parent_id)
-            .fetch_optional(pool.inner())
-            .await
-            .map_err(|e| format!("Database error: {}", e))?
-            .is_some();
-
-        if !parent_exists {
-            return Err("Parent category does not exist".to_string());
-        }
-
-        updates.push(format!("parent_id = {}", parent_id));
+        set_clauses.push(format!("parent_id = {}", pid));
     }
 
-    if updates.is_empty() {
+    if set_clauses.is_empty() {
         return Err("No fields to update".to_string());
     }
 
-    query.push_str(&updates.join(", "));
-    query.push_str(&format!(" WHERE id = {}", input.id));
+    let query = format!(
+        "UPDATE categories SET {} WHERE id = {}",
+        set_clauses.join(", "),
+        id
+    );
 
-    sqlx::query(&query)
-        .execute(pool.inner())
-        .await
+    let rows = conn
+        .execute(&query, [])
         .map_err(|e| format!("Failed to update category: {}", e))?;
+
+    if rows == 0 {
+        return Err("Category not found".to_string());
+    }
 
     Ok(())
 }
 
 #[tauri::command]
-pub async fn delete_category(pool: State<'_, SqlitePool>, category_id: i64) -> Result<(), String> {
-    // Check if category has transactions
-    let has_transactions =
-        sqlx::query("SELECT COUNT(*) as count FROM transactions WHERE category_id = ?")
-            .bind(category_id)
-            .fetch_one(pool.inner())
-            .await
-            .map_err(|e| format!("Database error: {}", e))?;
+pub fn delete_category(state: State<'_, AppState>, category_id: i64) -> Result<(), String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    let count: i64 = has_transactions.get("count");
-    if count > 0 {
-        return Err("Cannot delete category with existing transactions".to_string());
-    }
+    // Check for child categories
+    let child_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM categories WHERE parent_id = ?1",
+            params![category_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
-    // Check if category has children
-    let has_children = sqlx::query("SELECT COUNT(*) as count FROM categories WHERE parent_id = ?")
-        .bind(category_id)
-        .fetch_one(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?;
-
-    let child_count: i64 = has_children.get("count");
     if child_count > 0 {
-        return Err("Cannot delete category with subcategories".to_string());
+        return Err(format!(
+            "Cannot delete category with {} subcategories. Delete them first.",
+            child_count
+        ));
     }
 
-    sqlx::query("DELETE FROM categories WHERE id = ?")
-        .bind(category_id)
-        .execute(pool.inner())
-        .await
+    // Check for transactions
+    let txn_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM transactions WHERE category_id = ?1",
+            params![category_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if txn_count > 0 {
+        return Err(format!(
+            "Cannot delete category with {} transactions.",
+            txn_count
+        ));
+    }
+
+    // Check for budgets
+    let budget_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM budgets WHERE category_id = ?1",
+            params![category_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if budget_count > 0 {
+        return Err("Cannot delete category with active budgets.".to_string());
+    }
+
+    let rows = conn
+        .execute("DELETE FROM categories WHERE id = ?1", params![category_id])
         .map_err(|e| format!("Failed to delete category: {}", e))?;
 
+    if rows == 0 {
+        return Err("Category not found".to_string());
+    }
+
     Ok(())
+}
+
+#[tauri::command]
+pub fn get_recent_categories(
+    state: State<'_, AppState>,
+    transaction_type: String,
+    limit: Option<i32>,
+) -> Result<Vec<Category>, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let max_items = limit.unwrap_or(5);
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.id, c.parent_id, c.name, c.type
+             FROM categories c
+             INNER JOIN transactions t ON t.category_id = c.id
+             WHERE t.type = ?1
+             GROUP BY c.id
+             ORDER BY MAX(t.created_at) DESC
+             LIMIT ?2",
+        )
+        .map_err(|e| format!("Query error: {}", e))?;
+
+    let cats = stmt
+        .query_map(params![transaction_type, max_items], |row| {
+            Ok(Category {
+                id: row.get(0)?,
+                parent_id: row.get(1)?,
+                name: row.get(2)?,
+                category_type: row.get(3)?,
+            })
+        })
+        .map_err(|e| format!("Failed to fetch recent categories: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Read error: {}", e))?;
+
+    Ok(cats)
 }

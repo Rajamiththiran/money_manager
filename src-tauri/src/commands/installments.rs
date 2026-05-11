@@ -3,14 +3,19 @@ use crate::models::installment::{
     CreateInstallmentPlan, InstallmentPayment, InstallmentPaymentDetails, InstallmentPlan,
     InstallmentPlanWithDetails,
 };
+use crate::AppState;
 use chrono::{Duration, NaiveDate};
-use sqlx::{Row, SqlitePool};
+use rusqlite::params;
+use tauri::State;
 
 #[tauri::command]
-pub async fn create_installment_plan(
-    pool: tauri::State<'_, SqlitePool>,
+pub fn create_installment_plan(
+    state: State<'_, AppState>,
     plan: CreateInstallmentPlan,
 ) -> Result<InstallmentPlan, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     if plan.total_amount <= 0.0 {
         return Err("Total amount must be greater than 0".to_string());
     }
@@ -21,119 +26,110 @@ pub async fn create_installment_plan(
     let amount_per_installment =
         (plan.total_amount / plan.num_installments as f64 * 100.0).round() / 100.0;
 
-    let account_exists = sqlx::query("SELECT id FROM accounts WHERE id = ?")
-        .bind(plan.account_id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| e.to_string())?;
+    let account_exists: bool = conn.query_row(
+        "SELECT COUNT(id) FROM accounts WHERE id = ?1",
+        params![plan.account_id],
+        |row| row.get::<_, i64>(0),
+    ).unwrap_or(0) > 0;
 
-    if account_exists.is_none() {
+    if !account_exists {
         return Err("Account not found".to_string());
     }
 
-    let category_exists = sqlx::query("SELECT id FROM categories WHERE id = ?")
-        .bind(plan.category_id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| e.to_string())?;
+    let category_exists: bool = conn.query_row(
+        "SELECT COUNT(id) FROM categories WHERE id = ?1",
+        params![plan.category_id],
+        |row| row.get::<_, i64>(0),
+    ).unwrap_or(0) > 0;
 
-    if category_exists.is_none() {
+    if !category_exists {
         return Err("Category not found".to_string());
     }
 
     let next_due_date = calculate_next_due_date(&plan.start_date, &plan.frequency, 1)?;
 
-    let result = sqlx::query(
+    conn.execute(
         r#"
         INSERT INTO installment_plans (
             name, total_amount, num_installments, amount_per_installment,
             account_id, category_id, start_date, frequency, next_due_date, memo
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
         "#,
-    )
-    .bind(&plan.name)
-    .bind(plan.total_amount)
-    .bind(plan.num_installments)
-    .bind(amount_per_installment)
-    .bind(plan.account_id)
-    .bind(plan.category_id)
-    .bind(&plan.start_date)
-    .bind(&plan.frequency)
-    .bind(&next_due_date)
-    .bind(&plan.memo)
-    .execute(pool.inner())
-    .await
-    .map_err(|e| e.to_string())?;
+        params![
+            plan.name,
+            plan.total_amount,
+            plan.num_installments,
+            amount_per_installment,
+            plan.account_id,
+            plan.category_id,
+            plan.start_date,
+            plan.frequency,
+            next_due_date,
+            plan.memo
+        ],
+    ).map_err(|e| e.to_string())?;
 
-    let plan_id = result.last_insert_rowid();
+    let plan_id = conn.last_insert_rowid();
 
-    get_installment_plan(pool, plan_id).await
+    get_installment_plan_internal(&conn, plan_id)
 }
 
 #[tauri::command]
-pub async fn get_installment_plan(
-    pool: tauri::State<'_, SqlitePool>,
+pub fn get_installment_plan(
+    state: State<'_, AppState>,
     plan_id: i64,
 ) -> Result<InstallmentPlan, String> {
-    let row = sqlx::query(
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    get_installment_plan_internal(&conn, plan_id)
+}
+
+fn get_installment_plan_internal(
+    conn: &rusqlite::Connection,
+    plan_id: i64,
+) -> Result<InstallmentPlan, String> {
+    let mut stmt = conn.prepare(
         r#"
         SELECT 
             id, name, total_amount, num_installments, amount_per_installment,
             account_id, category_id, start_date, frequency, next_due_date,
             installments_paid, total_paid, status, memo, created_at, updated_at
         FROM installment_plans
-        WHERE id = ?
+        WHERE id = ?1
         "#,
-    )
-    .bind(plan_id)
-    .fetch_optional(pool.inner())
-    .await
-    .map_err(|e| e.to_string())?
-    .ok_or_else(|| "Installment plan not found".to_string())?;
+    ).map_err(|e| e.to_string())?;
 
-    Ok(InstallmentPlan {
-        id: row.get("id"),
-        name: row.get("name"),
-        total_amount: row.get("total_amount"),
-        num_installments: row.get("num_installments"),
-        amount_per_installment: row.get("amount_per_installment"),
-        account_id: row.get("account_id"),
-        category_id: row.get("category_id"),
-        start_date: row.get("start_date"),
-        frequency: row.get("frequency"),
-        next_due_date: row.get("next_due_date"),
-        installments_paid: row.get("installments_paid"),
-        total_paid: row.get("total_paid"),
-        status: row.get("status"),
-        memo: row.get("memo"),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-    })
+    stmt.query_row(params![plan_id], row_to_installment_plan)
+        .map_err(|_| "Installment plan not found".to_string())
 }
 
 #[tauri::command]
-pub async fn get_installment_plans(
-    pool: tauri::State<'_, SqlitePool>,
+pub fn get_installment_plans(
+    state: State<'_, AppState>,
     status_filter: Option<String>,
 ) -> Result<Vec<InstallmentPlan>, String> {
-    let rows = if let Some(status) = status_filter {
-        sqlx::query(
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let plans = if let Some(status) = status_filter {
+        let mut stmt = conn.prepare(
             r#"
             SELECT 
                 id, name, total_amount, num_installments, amount_per_installment,
                 account_id, category_id, start_date, frequency, next_due_date,
                 installments_paid, total_paid, status, memo, created_at, updated_at
             FROM installment_plans
-            WHERE status = ?
+            WHERE status = ?1
             ORDER BY next_due_date ASC
             "#,
-        )
-        .bind(status)
-        .fetch_all(pool.inner())
-        .await
-        .map_err(|e| e.to_string())?
+        ).unwrap();
+        stmt.query_map(params![status], row_to_installment_plan)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect()
     } else {
-        sqlx::query(
+        let mut stmt = conn.prepare(
             r#"
             SELECT 
                 id, name, total_amount, num_installments, amount_per_installment,
@@ -142,103 +138,76 @@ pub async fn get_installment_plans(
             FROM installment_plans
             ORDER BY status ASC, next_due_date ASC
             "#,
-        )
-        .fetch_all(pool.inner())
-        .await
-        .map_err(|e| e.to_string())?
+        ).unwrap();
+        stmt.query_map([], row_to_installment_plan)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect()
     };
-
-    let plans = rows
-        .iter()
-        .map(|row| InstallmentPlan {
-            id: row.get("id"),
-            name: row.get("name"),
-            total_amount: row.get("total_amount"),
-            num_installments: row.get("num_installments"),
-            amount_per_installment: row.get("amount_per_installment"),
-            account_id: row.get("account_id"),
-            category_id: row.get("category_id"),
-            start_date: row.get("start_date"),
-            frequency: row.get("frequency"),
-            next_due_date: row.get("next_due_date"),
-            installments_paid: row.get("installments_paid"),
-            total_paid: row.get("total_paid"),
-            status: row.get("status"),
-            memo: row.get("memo"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-        })
-        .collect();
 
     Ok(plans)
 }
 
 #[tauri::command]
-pub async fn get_installment_plan_with_details(
-    pool: tauri::State<'_, SqlitePool>,
+pub fn get_installment_plan_with_details(
+    state: State<'_, AppState>,
     plan_id: i64,
 ) -> Result<InstallmentPlanWithDetails, String> {
-    let plan = get_installment_plan(pool.clone(), plan_id).await?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    let account_row = sqlx::query("SELECT name FROM accounts WHERE id = ?")
-        .bind(plan.account_id)
-        .fetch_one(pool.inner())
-        .await
-        .map_err(|e| e.to_string())?;
-    let account_name: String = account_row.get("name");
+    let plan = get_installment_plan_internal(&conn, plan_id)?;
 
-    let category_row = sqlx::query("SELECT name FROM categories WHERE id = ?")
-        .bind(plan.category_id)
-        .fetch_one(pool.inner())
-        .await
-        .map_err(|e| e.to_string())?;
-    let category_name: String = category_row.get("name");
+    let account_name: String = conn.query_row(
+        "SELECT name FROM accounts WHERE id = ?1",
+        params![plan.account_id],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
 
-    let payment_rows = sqlx::query(
+    let category_name: String = conn.query_row(
+        "SELECT name FROM categories WHERE id = ?1",
+        params![plan.category_id],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+
+    let mut stmt = conn.prepare(
         r#"
         SELECT 
             id, installment_plan_id, transaction_id, installment_number,
             amount, due_date, paid_date, created_at
         FROM installment_payments
-        WHERE installment_plan_id = ?
+        WHERE installment_plan_id = ?1
         ORDER BY installment_number ASC
         "#,
-    )
-    .bind(plan_id)
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| e.to_string())?;
+    ).map_err(|e| e.to_string())?;
 
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let payment_details: Vec<InstallmentPaymentDetails> = payment_rows
-        .iter()
-        .map(|row| {
-            let paid_date: String = row.get("paid_date");
-            let status = if paid_date <= today {
-                "PAID".to_string()
-            } else {
-                "PENDING".to_string()
-            };
+    let payment_details: Vec<InstallmentPaymentDetails> = stmt.query_map(params![plan_id], |row| {
+        let paid_date: String = row.get(6)?;
+        let status = if paid_date <= today {
+            "PAID".to_string()
+        } else {
+            "PENDING".to_string()
+        };
 
-            InstallmentPaymentDetails {
-                installment_number: row.get("installment_number"),
-                amount: row.get("amount"),
-                due_date: row.get("due_date"),
-                paid_date: Some(paid_date.clone()),
-                status,
-                payment: InstallmentPayment {
-                    id: row.get("id"),
-                    installment_plan_id: row.get("installment_plan_id"),
-                    transaction_id: row.get("transaction_id"),
-                    installment_number: row.get("installment_number"),
-                    amount: row.get("amount"),
-                    due_date: row.get("due_date"),
-                    paid_date,
-                    created_at: row.get("created_at"),
-                },
-            }
+        Ok(InstallmentPaymentDetails {
+            installment_number: row.get(3)?,
+            amount: row.get(4)?,
+            due_date: row.get(5)?,
+            paid_date: Some(paid_date.clone()),
+            status,
+            payment: InstallmentPayment {
+                id: row.get(0)?,
+                installment_plan_id: row.get(1)?,
+                transaction_id: row.get(2)?,
+                installment_number: row.get(3)?,
+                amount: row.get(4)?,
+                due_date: row.get(5)?,
+                paid_date,
+                created_at: row.get(7)?,
+            },
         })
-        .collect();
+    }).unwrap().filter_map(Result::ok).collect();
 
     let remaining_amount = plan.total_amount - plan.total_paid;
     let remaining_installments = plan.num_installments - plan.installments_paid;
@@ -255,11 +224,14 @@ pub async fn get_installment_plan_with_details(
 }
 
 #[tauri::command]
-pub async fn process_installment_payment(
-    pool: tauri::State<'_, SqlitePool>,
+pub fn process_installment_payment(
+    state: State<'_, AppState>,
     plan_id: i64,
 ) -> Result<InstallmentPayment, String> {
-    let mut plan = get_installment_plan(pool.clone(), plan_id).await?;
+    let pool = crate::get_db(&state)?;
+    let mut conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let mut plan = get_installment_plan_internal(&conn, plan_id)?;
 
     if plan.status != "ACTIVE" {
         return Err("Can only process payments for active installment plans".to_string());
@@ -278,58 +250,39 @@ pub async fn process_installment_payment(
         next_installment_number, plan.num_installments, plan.name
     );
 
-    let transaction_result = sqlx::query(
+    let tx = conn.transaction().map_err(|e| format!("Transaction error: {}", e))?;
+
+    tx.execute(
         r#"
         INSERT INTO transactions (
             type, date, account_id, category_id,
             amount, memo
-        ) VALUES ('EXPENSE', ?, ?, ?, ?, ?)
+        ) VALUES ('EXPENSE', ?1, ?2, ?3, ?4, ?5)
         "#,
-    )
-    .bind(&today)
-    .bind(plan.account_id)
-    .bind(plan.category_id)
-    .bind(payment_amount)
-    .bind(&memo)
-    .execute(pool.inner())
-    .await
-    .map_err(|e| e.to_string())?;
+        params![today, plan.account_id, plan.category_id, payment_amount, memo],
+    ).map_err(|e| e.to_string())?;
 
-    let transaction_id = transaction_result.last_insert_rowid();
+    let transaction_id = tx.last_insert_rowid();
 
-    // EXPENSE: Credit the account (decrease asset) — matches create_transaction pattern
-    sqlx::query(
+    tx.execute(
         r#"
         INSERT INTO journal_entries (transaction_id, account_id, debit, credit)
-        VALUES (?, ?, 0.0, ?)
+        VALUES (?1, ?2, 0.0, ?3)
         "#,
-    )
-    .bind(transaction_id)
-    .bind(plan.account_id)
-    .bind(payment_amount)
-    .execute(pool.inner())
-    .await
-    .map_err(|e| e.to_string())?;
+        params![transaction_id, plan.account_id, payment_amount],
+    ).map_err(|e| e.to_string())?;
 
-    let payment_result = sqlx::query(
+    tx.execute(
         r#"
         INSERT INTO installment_payments (
             installment_plan_id, transaction_id, installment_number,
             amount, due_date, paid_date
-        ) VALUES (?, ?, ?, ?, ?, ?)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         "#,
-    )
-    .bind(plan_id)
-    .bind(transaction_id)
-    .bind(next_installment_number)
-    .bind(payment_amount)
-    .bind(&plan.next_due_date)
-    .bind(&today)
-    .execute(pool.inner())
-    .await
-    .map_err(|e| e.to_string())?;
+        params![plan_id, transaction_id, next_installment_number, payment_amount, plan.next_due_date, today],
+    ).map_err(|e| e.to_string())?;
 
-    let payment_id = payment_result.last_insert_rowid();
+    let payment_id = tx.last_insert_rowid();
 
     plan.installments_paid += 1;
     plan.total_paid += payment_amount;
@@ -350,58 +303,57 @@ pub async fn process_installment_payment(
         plan.next_due_date.clone()
     };
 
-    sqlx::query(
+    tx.execute(
         r#"
         UPDATE installment_plans
-        SET installments_paid = ?,
-            total_paid = ?,
-            next_due_date = ?,
-            status = ?,
+        SET installments_paid = ?1,
+            total_paid = ?2,
+            next_due_date = ?3,
+            status = ?4,
             updated_at = datetime('now')
-        WHERE id = ?
+        WHERE id = ?5
         "#,
-    )
-    .bind(plan.installments_paid)
-    .bind(plan.total_paid)
-    .bind(&next_due_date)
-    .bind(new_status)
-    .bind(plan_id)
-    .execute(pool.inner())
-    .await
-    .map_err(|e| e.to_string())?;
+        params![plan.installments_paid, plan.total_paid, next_due_date, new_status, plan_id],
+    ).map_err(|e| e.to_string())?;
 
-    let payment_row = sqlx::query(
+    let mut stmt = tx.prepare(
         r#"
         SELECT 
             id, installment_plan_id, transaction_id, installment_number,
             amount, due_date, paid_date, created_at
         FROM installment_payments
-        WHERE id = ?
+        WHERE id = ?1
         "#,
-    )
-    .bind(payment_id)
-    .fetch_one(pool.inner())
-    .await
-    .map_err(|e| e.to_string())?;
+    ).unwrap();
 
-    Ok(InstallmentPayment {
-        id: payment_row.get("id"),
-        installment_plan_id: payment_row.get("installment_plan_id"),
-        transaction_id: payment_row.get("transaction_id"),
-        installment_number: payment_row.get("installment_number"),
-        amount: payment_row.get("amount"),
-        due_date: payment_row.get("due_date"),
-        paid_date: payment_row.get("paid_date"),
-        created_at: payment_row.get("created_at"),
-    })
+    let payment = stmt.query_row(params![payment_id], |row| {
+        Ok(InstallmentPayment {
+            id: row.get(0)?,
+            installment_plan_id: row.get(1)?,
+            transaction_id: row.get(2)?,
+            installment_number: row.get(3)?,
+            amount: row.get(4)?,
+            due_date: row.get(5)?,
+            paid_date: row.get(6)?,
+            created_at: row.get(7)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    drop(stmt);
+    tx.commit().map_err(|e| format!("Failed to commit: {}", e))?;
+
+    Ok(payment)
 }
 
 #[tauri::command]
-pub async fn cancel_installment_plan(
-    pool: tauri::State<'_, SqlitePool>,
+pub fn cancel_installment_plan(
+    state: State<'_, AppState>,
     plan_id: i64,
 ) -> Result<(), String> {
-    let plan = get_installment_plan(pool.clone(), plan_id).await?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let plan = get_installment_plan_internal(&conn, plan_id)?;
 
     if plan.status != "ACTIVE" {
         return Err(format!(
@@ -410,67 +362,58 @@ pub async fn cancel_installment_plan(
         ));
     }
 
-    sqlx::query(
+    conn.execute(
         r#"
         UPDATE installment_plans
         SET status = 'CANCELLED',
             updated_at = datetime('now')
-        WHERE id = ?
+        WHERE id = ?1
         "#,
-    )
-    .bind(plan_id)
-    .execute(pool.inner())
-    .await
-    .map_err(|e| e.to_string())?;
+        params![plan_id],
+    ).map_err(|e| e.to_string())?;
 
     Ok(())
 }
 
 #[tauri::command]
-pub async fn delete_installment_plan(
-    pool: tauri::State<'_, SqlitePool>,
+pub fn delete_installment_plan(
+    state: State<'_, AppState>,
     plan_id: i64,
 ) -> Result<(), String> {
-    let plan = get_installment_plan(pool.clone(), plan_id).await?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    // Only allow deletion of COMPLETED or CANCELLED plans
-    // ACTIVE plans must be cancelled first
+    let plan = get_installment_plan_internal(&conn, plan_id)?;
+
     if plan.status == "ACTIVE" {
         return Err(
             "Cannot delete an active installment plan. Cancel it first, then delete.".to_string(),
         );
     }
 
-    // Delete installment payment records (transactions remain in history for reports)
-    // The installment_payments table has ON DELETE CASCADE on installment_plan_id,
-    // so deleting the plan will auto-cascade, but we do it explicitly for clarity
-    sqlx::query("DELETE FROM installment_payments WHERE installment_plan_id = ?")
-        .bind(plan_id)
-        .execute(pool.inner())
-        .await
+    conn.execute("DELETE FROM installment_payments WHERE installment_plan_id = ?1", params![plan_id])
         .map_err(|e| e.to_string())?;
 
-    // Delete the installment plan itself
-    sqlx::query("DELETE FROM installment_plans WHERE id = ?")
-        .bind(plan_id)
-        .execute(pool.inner())
-        .await
+    conn.execute("DELETE FROM installment_plans WHERE id = ?1", params![plan_id])
         .map_err(|e| e.to_string())?;
 
     Ok(())
 }
 
 #[tauri::command]
-pub async fn get_upcoming_installments(
-    pool: tauri::State<'_, SqlitePool>,
+pub fn get_upcoming_installments(
+    state: State<'_, AppState>,
     days_ahead: i32,
 ) -> Result<Vec<InstallmentPlan>, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let future_date = (chrono::Local::now() + Duration::days(days_ahead as i64))
         .format("%Y-%m-%d")
         .to_string();
 
-    let rows = sqlx::query(
+    let mut stmt = conn.prepare(
         r#"
         SELECT 
             id, name, total_amount, num_installments, amount_per_installment,
@@ -478,40 +421,39 @@ pub async fn get_upcoming_installments(
             installments_paid, total_paid, status, memo, created_at, updated_at
         FROM installment_plans
         WHERE status = 'ACTIVE'
-          AND next_due_date >= ?
-          AND next_due_date <= ?
+          AND next_due_date >= ?1
+          AND next_due_date <= ?2
         ORDER BY next_due_date ASC
         "#,
-    )
-    .bind(&today)
-    .bind(&future_date)
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| e.to_string())?;
+    ).map_err(|e| e.to_string())?;
 
-    let plans = rows
-        .iter()
-        .map(|row| InstallmentPlan {
-            id: row.get("id"),
-            name: row.get("name"),
-            total_amount: row.get("total_amount"),
-            num_installments: row.get("num_installments"),
-            amount_per_installment: row.get("amount_per_installment"),
-            account_id: row.get("account_id"),
-            category_id: row.get("category_id"),
-            start_date: row.get("start_date"),
-            frequency: row.get("frequency"),
-            next_due_date: row.get("next_due_date"),
-            installments_paid: row.get("installments_paid"),
-            total_paid: row.get("total_paid"),
-            status: row.get("status"),
-            memo: row.get("memo"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-        })
+    let plans: Vec<InstallmentPlan> = stmt.query_map(params![today, future_date], row_to_installment_plan)
+        .unwrap()
+        .filter_map(Result::ok)
         .collect();
 
     Ok(plans)
+}
+
+fn row_to_installment_plan(row: &rusqlite::Row) -> rusqlite::Result<InstallmentPlan> {
+    Ok(InstallmentPlan {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        total_amount: row.get(2)?,
+        num_installments: row.get(3)?,
+        amount_per_installment: row.get(4)?,
+        account_id: row.get(5)?,
+        category_id: row.get(6)?,
+        start_date: row.get(7)?,
+        frequency: row.get(8)?,
+        next_due_date: row.get(9)?,
+        installments_paid: row.get(10)?,
+        total_paid: row.get(11)?,
+        status: row.get(12)?,
+        memo: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
+    })
 }
 
 fn calculate_next_due_date(

@@ -1,6 +1,7 @@
 // File: src-tauri/src/commands/scheduled_backup.rs
+use crate::AppState;
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use sqlx::{Row, SqlitePool};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -51,18 +52,21 @@ pub struct ZipRestoreResult {
 
 // ======================== COMMANDS ========================
 
-/// Read all auto-backup settings from app_settings
 #[tauri::command]
-pub async fn get_backup_settings(pool: State<'_, SqlitePool>) -> Result<BackupSettings, String> {
-    get_backup_settings_internal(pool.inner()).await
+pub fn get_backup_settings(state: State<'_, AppState>) -> Result<BackupSettings, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+    get_backup_settings_internal(&conn)
 }
 
-/// Save all auto-backup settings to app_settings
 #[tauri::command]
-pub async fn update_backup_settings(
-    pool: State<'_, SqlitePool>,
+pub fn update_backup_settings(
+    state: State<'_, AppState>,
     settings: BackupSettings,
 ) -> Result<(), String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     let pairs = vec![
         ("auto_backup_enabled", settings.auto_backup_enabled.to_string()),
         ("auto_backup_frequency", settings.auto_backup_frequency),
@@ -73,26 +77,23 @@ pub async fn update_backup_settings(
     ];
 
     for (key, value) in pairs {
-        sqlx::query(
-            "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+        conn.execute(
+            "INSERT INTO app_settings (key, value, updated_at) VALUES (?1, ?2, datetime('now'))
              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-        )
-        .bind(key)
-        .bind(value)
-        .execute(pool.inner())
-        .await
-        .map_err(|e| format!("Failed to update setting '{}': {}", key, e))?;
+            params![key, value],
+        ).map_err(|e| format!("Failed to update setting '{}': {}", key, e))?;
     }
 
     Ok(())
 }
 
-/// Get the current backup status (for display in Settings UI)
 #[tauri::command]
-pub async fn get_backup_status(
-    pool: State<'_, SqlitePool>,
+pub fn get_backup_status(
+    state: State<'_, AppState>,
 ) -> Result<BackupStatus, String> {
-    let settings = get_backup_settings_internal(pool.inner()).await?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+    let settings = get_backup_settings_internal(&conn)?;
 
     let last_backup_date = if settings.auto_backup_last_run.is_empty() {
         None
@@ -126,13 +127,14 @@ pub async fn get_backup_status(
     })
 }
 
-/// Manually trigger an auto-backup from the Settings UI
 #[tauri::command]
-pub async fn run_auto_backup_now(
+pub fn run_auto_backup_now(
     app_handle: tauri::AppHandle,
-    pool: State<'_, SqlitePool>,
+    state: State<'_, AppState>,
 ) -> Result<BackupResult, String> {
-    let settings = get_backup_settings_internal(pool.inner()).await?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+    let settings = get_backup_settings_internal(&conn)?;
 
     if settings.auto_backup_path.is_empty() {
         return Err("No backup path configured. Please select a backup folder first.".to_string());
@@ -144,52 +146,46 @@ pub async fn run_auto_backup_now(
         .map_err(|e| format!("Failed to get app data directory: {}", e))?;
 
     let result = perform_backup(
-        pool.inner(),
+        &conn,
         &settings.auto_backup_path,
         settings.auto_backup_include_photos,
         &app_data_dir,
-    )
-    .await?;
+    )?;
 
-    // Update last run timestamp
-    set_setting(pool.inner(), "auto_backup_last_run", &chrono::Utc::now().to_rfc3339()).await?;
+    set_setting(&conn, "auto_backup_last_run", &chrono::Utc::now().to_rfc3339())?;
 
-    // Apply retention
     apply_retention(&settings.auto_backup_path, settings.auto_backup_retention)?;
 
     Ok(result)
 }
 
-/// Called from lib.rs setup — runs silently on app startup.
-/// Returns Some(message) if backup was performed, None otherwise.
 #[tauri::command]
-pub async fn check_and_run_auto_backup(
+pub fn check_and_run_auto_backup(
     app_handle: tauri::AppHandle,
-    pool: State<'_, SqlitePool>,
+    state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
-    check_and_run_auto_backup_internal(pool.inner(), &app_handle).await
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+    check_and_run_auto_backup_internal(&conn, &app_handle)
 }
 
-/// Restore from a .zip backup file.
-/// Extracts backup.json → restores DB via existing restore logic.
-/// If photos/ directory exists in zip → copies photos back to app photos dir
-/// and re-inserts transaction_photos records with remapped transaction IDs.
 #[tauri::command]
-pub async fn restore_from_zip_backup(
+pub fn restore_from_zip_backup(
     app_handle: tauri::AppHandle,
-    pool: State<'_, SqlitePool>,
+    state: State<'_, AppState>,
     zip_path: String,
 ) -> Result<ZipRestoreResult, String> {
+    let pool = crate::get_db(&state)?;
+    let mut conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     println!("=== restore_from_zip_backup called ===");
     println!("Zip path: {}", zip_path);
 
-    // 1. Open the zip file
     let file = fs::File::open(&zip_path)
         .map_err(|e| format!("Failed to open zip file: {}", e))?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| format!("Failed to read zip archive: {}", e))?;
 
-    // 2. Extract backup.json
     let backup_json = {
         let mut backup_file = archive
             .by_name("backup.json")
@@ -201,7 +197,6 @@ pub async fn restore_from_zip_backup(
         contents
     };
 
-    // 3. Parse the backup JSON
     let backup: serde_json::Value = serde_json::from_str(&backup_json)
         .map_err(|e| format!("Invalid backup.json format: {}", e))?;
 
@@ -210,13 +205,10 @@ pub async fn restore_from_zip_backup(
         return Err(format!("Unsupported backup version: {}. Expected 1.0", version));
     }
 
-    // 4. Restore the database using the existing restore logic
-    // We call restore_from_backup via the pool directly
     let restore_result = crate::commands::settings::restore_from_backup_internal(
-        pool.inner(), &backup_json
-    ).await?;
+        &mut conn, &backup_json
+    )?;
 
-    // 5. Restore photos from the zip (if present)
     let app_data_dir = app_handle
         .path()
         .app_data_dir()
@@ -225,7 +217,6 @@ pub async fn restore_from_zip_backup(
 
     let mut photos_restored: i64 = 0;
 
-    // Re-open archive since ZipArchive borrows the file
     let file2 = fs::File::open(&zip_path)
         .map_err(|e| format!("Failed to re-open zip file: {}", e))?;
     let mut archive2 = zip::ZipArchive::new(file2)
@@ -237,20 +228,16 @@ pub async fn restore_from_zip_backup(
 
         let entry_name = entry.name().to_string();
 
-        // Check if this is a photo file inside the photos/ directory
         if entry_name.starts_with("photos/") && entry_name.len() > 7 && !entry.is_dir() {
             let filename = entry_name.strip_prefix("photos/").unwrap_or(&entry_name);
             
-            // Skip subdirectory paths — only restore direct files
             if filename.contains('/') {
                 continue;
             }
 
-            // Create photos directory if needed
             fs::create_dir_all(&photos_dir)
                 .map_err(|e| format!("Failed to create photos directory: {}", e))?;
 
-            // Extract the photo file
             let dest_path = photos_dir.join(filename);
             let mut output = fs::File::create(&dest_path)
                 .map_err(|e| format!("Failed to create photo file {}: {}", filename, e))?;
@@ -262,43 +249,19 @@ pub async fn restore_from_zip_backup(
         }
     }
 
-    // 6. Restore transaction_photos records if present in backup JSON
     let data = backup.get("data");
     if let Some(photos_data) = data.and_then(|d| d.get("transaction_photos")).and_then(|v| v.as_array()) {
-        // We need to remap old transaction IDs to new ones.
-        // Since restore_from_backup_internal returns the result but not the ID maps,
-        // we'll re-insert photos by matching filenames to the photos on disk.
-        // The simplest approach: insert records with the new transaction IDs.
-        // But we don't have the mapping here. So we'll match by the original transaction's
-        // unique characteristics (date + amount + account) or simply insert with
-        // a filename-based approach.
-        
-        // Actually, since the full restore replaces all data with sequential new IDs,
-        // and our backup stores transaction_photos with old_transaction_id,
-        // we need to build a mapping. The restore logic creates transactions in order,
-        // so old_id N maps to new sequential ID.
-        // Let's query all transactions and build the map from backup data.
-        
         let txn_data = data.and_then(|d| d.get("transactions")).and_then(|v| v.as_array());
         
         if let Some(transactions) = txn_data {
-            // Build old_id → position map (0-indexed order of insertion)
             let old_ids: Vec<i64> = transactions.iter().map(|t| {
                 let txn = t.get("transaction").unwrap_or(t);
                 txn.get("id").and_then(|v| v.as_i64()).unwrap_or(0)
             }).collect();
 
-            // Fetch all new transaction IDs in insertion order
-            let new_txn_rows = sqlx::query(
-                "SELECT id FROM transactions ORDER BY id ASC"
-            )
-            .fetch_all(pool.inner())
-            .await
-            .map_err(|e| format!("Failed to fetch new transaction IDs: {}", e))?;
+            let mut stmt = conn.prepare("SELECT id FROM transactions ORDER BY id ASC").unwrap();
+            let new_ids: Vec<i64> = stmt.query_map([], |row| row.get(0)).unwrap().filter_map(Result::ok).collect();
 
-            let new_ids: Vec<i64> = new_txn_rows.iter().map(|r| r.get::<i64, _>("id")).collect();
-
-            // Build old → new map
             let mut txn_id_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
             for (idx, old_id) in old_ids.iter().enumerate() {
                 if idx < new_ids.len() {
@@ -306,7 +269,6 @@ pub async fn restore_from_zip_backup(
                 }
             }
 
-            // Now insert transaction_photos with remapped IDs
             for photo in photos_data {
                 let old_txn_id = photo.get("transaction_id").and_then(|v| v.as_i64()).unwrap_or(0);
                 let filename = photo.get("filename").and_then(|v| v.as_str()).unwrap_or("");
@@ -317,16 +279,12 @@ pub async fn restore_from_zip_backup(
 
                 let new_txn_id = txn_id_map.get(&old_txn_id).copied().unwrap_or(old_txn_id);
 
-                // Only insert if the photo file exists on disk
                 let photo_path = photos_dir.join(filename);
                 if photo_path.exists() {
-                    let _ = sqlx::query(
-                        "INSERT OR IGNORE INTO transaction_photos (transaction_id, filename) VALUES (?, ?)"
-                    )
-                    .bind(new_txn_id)
-                    .bind(filename)
-                    .execute(pool.inner())
-                    .await;
+                    let _ = conn.execute(
+                        "INSERT OR IGNORE INTO transaction_photos (transaction_id, filename) VALUES (?1, ?2)",
+                        params![new_txn_id, filename]
+                    );
                 }
             }
         }
@@ -356,24 +314,20 @@ pub async fn restore_from_zip_backup(
     })
 }
 
-/// Internal version callable without State wrapper (for lib.rs startup)
-pub async fn check_and_run_auto_backup_internal(
-    pool: &SqlitePool,
+pub fn check_and_run_auto_backup_internal(
+    conn: &rusqlite::Connection,
     app_handle: &tauri::AppHandle,
 ) -> Result<Option<String>, String> {
-    let settings = get_backup_settings_internal(pool).await?;
+    let settings = get_backup_settings_internal(conn)?;
 
-    // Skip if disabled
     if !settings.auto_backup_enabled {
         return Ok(None);
     }
 
-    // Skip if no path configured
     if settings.auto_backup_path.is_empty() {
         return Ok(None);
     }
 
-    // Check if backup is due
     if !is_backup_due(&settings.auto_backup_last_run, &settings.auto_backup_frequency) {
         return Ok(None);
     }
@@ -383,19 +337,15 @@ pub async fn check_and_run_auto_backup_internal(
         .app_data_dir()
         .map_err(|e| format!("Failed to get app data directory: {}", e))?;
 
-    // Perform the backup
     let result = perform_backup(
-        pool,
+        conn,
         &settings.auto_backup_path,
         settings.auto_backup_include_photos,
         &app_data_dir,
-    )
-    .await?;
+    )?;
 
-    // Update last run
-    set_setting(pool, "auto_backup_last_run", &chrono::Utc::now().to_rfc3339()).await?;
+    set_setting(conn, "auto_backup_last_run", &chrono::Utc::now().to_rfc3339())?;
 
-    // Apply retention
     apply_retention(&settings.auto_backup_path, settings.auto_backup_retention)?;
 
     Ok(Some(format!(
@@ -406,13 +356,14 @@ pub async fn check_and_run_auto_backup_internal(
 
 // ======================== INTERNAL HELPERS ========================
 
-async fn get_backup_settings_internal(pool: &SqlitePool) -> Result<BackupSettings, String> {
-    let rows = sqlx::query(
+fn get_backup_settings_internal(conn: &rusqlite::Connection) -> Result<BackupSettings, String> {
+    let mut stmt = conn.prepare(
         "SELECT key, value FROM app_settings WHERE key LIKE 'auto_backup_%'"
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(|e| format!("Failed to read backup settings: {}", e))?;
+    ).map_err(|e| format!("Database error: {}", e))?;
+
+    let rows: Vec<(String, String)> = stmt.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    }).unwrap().filter_map(Result::ok).collect();
 
     let mut settings = BackupSettings {
         auto_backup_enabled: false,
@@ -423,9 +374,7 @@ async fn get_backup_settings_internal(pool: &SqlitePool) -> Result<BackupSetting
         auto_backup_last_run: String::new(),
     };
 
-    for row in &rows {
-        let key: String = row.get("key");
-        let value: String = row.get("value");
+    for (key, value) in rows {
         match key.as_str() {
             "auto_backup_enabled" => settings.auto_backup_enabled = value == "true",
             "auto_backup_frequency" => settings.auto_backup_frequency = value,
@@ -444,40 +393,30 @@ async fn get_backup_settings_internal(pool: &SqlitePool) -> Result<BackupSetting
     Ok(settings)
 }
 
-async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> Result<(), String> {
-    sqlx::query(
-        "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+fn set_setting(conn: &rusqlite::Connection, key: &str, value: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO app_settings (key, value, updated_at) VALUES (?1, ?2, datetime('now'))
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-    )
-    .bind(key)
-    .bind(value)
-    .execute(pool)
-    .await
-    .map_err(|e| format!("Failed to update setting '{}': {}", key, e))?;
+        params![key, value],
+    ).map_err(|e| format!("Failed to update setting '{}': {}", key, e))?;
     Ok(())
 }
 
-/// Core backup logic: creates a zip file containing the database JSON export
-/// and optionally the photos directory.
-async fn perform_backup(
-    pool: &SqlitePool,
+fn perform_backup(
+    conn: &rusqlite::Connection,
     backup_path: &str,
     include_photos: bool,
     app_data_dir: &Path,
 ) -> Result<BackupResult, String> {
-    // Ensure backup directory exists
     fs::create_dir_all(backup_path)
         .map_err(|e| format!("Failed to create backup directory: {}", e))?;
 
-    // Generate filename
     let now = chrono::Local::now();
     let filename = format!("money_manager_backup_{}.zip", now.format("%Y-%m-%d_%H%M"));
     let zip_path = PathBuf::from(backup_path).join(&filename);
 
-    // Generate backup JSON (reuse the same logic as export_full_backup)
-    let backup_json = generate_backup_json(pool).await?;
+    let backup_json = generate_backup_json(conn)?;
 
-    // Create the zip file
     let file = fs::File::create(&zip_path)
         .map_err(|e| format!("Failed to create zip file: {}", e))?;
 
@@ -486,13 +425,11 @@ async fn perform_backup(
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o644);
 
-    // Add backup.json
     zip.start_file("backup.json", options)
         .map_err(|e| format!("Failed to add backup.json to zip: {}", e))?;
     zip.write_all(backup_json.as_bytes())
         .map_err(|e| format!("Failed to write backup data: {}", e))?;
 
-    // Optionally add photos
     let mut photos_included = false;
     if include_photos {
         let photos_dir = app_data_dir.join("photos");
@@ -505,7 +442,6 @@ async fn perform_backup(
     zip.finish()
         .map_err(|e| format!("Failed to finalize zip: {}", e))?;
 
-    // Get file size
     let file_size = fs::metadata(&zip_path)
         .map(|m| m.len())
         .unwrap_or(0);
@@ -522,50 +458,32 @@ async fn perform_backup(
     })
 }
 
-/// Generate JSON backup data (same structure as export_full_backup)
-async fn generate_backup_json(pool: &SqlitePool) -> Result<String, String> {
-    // Accounts
-    let account_rows = sqlx::query(
+fn generate_backup_json(conn: &rusqlite::Connection) -> Result<String, String> {
+    let mut stmt = conn.prepare(
         "SELECT id, group_id, name, initial_balance, currency, created_at FROM accounts ORDER BY name",
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(|e| format!("Failed to fetch accounts: {}", e))?;
+    ).unwrap();
+    let accounts: Vec<serde_json::Value> = stmt.query_map([], |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_, i64>(0)?,
+            "group_id": row.get::<_, i64>(1)?,
+            "name": row.get::<_, String>(2)?,
+            "initial_balance": row.get::<_, f64>(3)?,
+            "currency": row.get::<_, String>(4)?,
+            "created_at": row.get::<_, String>(5)?
+        }))
+    }).unwrap().filter_map(Result::ok).collect();
 
-    let accounts: Vec<serde_json::Value> = account_rows
-        .iter()
-        .map(|row| {
-            serde_json::json!({
-                "id": row.get::<i64, _>("id"),
-                "group_id": row.get::<i64, _>("group_id"),
-                "name": row.get::<String, _>("name"),
-                "initial_balance": row.get::<f64, _>("initial_balance"),
-                "currency": row.get::<String, _>("currency"),
-                "created_at": row.get::<String, _>("created_at")
-            })
-        })
-        .collect();
+    let mut stmt = conn.prepare("SELECT id, name, type, parent_id FROM categories ORDER BY name").unwrap();
+    let categories: Vec<serde_json::Value> = stmt.query_map([], |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_, i64>(0)?,
+            "name": row.get::<_, String>(1)?,
+            "type": row.get::<_, String>(2)?,
+            "parent_id": row.get::<_, Option<i64>>(3)?
+        }))
+    }).unwrap().filter_map(Result::ok).collect();
 
-    // Categories
-    let category_rows = sqlx::query("SELECT id, name, type, parent_id FROM categories ORDER BY name")
-        .fetch_all(pool)
-        .await
-        .map_err(|e| format!("Failed to fetch categories: {}", e))?;
-
-    let categories: Vec<serde_json::Value> = category_rows
-        .iter()
-        .map(|row| {
-            serde_json::json!({
-                "id": row.get::<i64, _>("id"),
-                "name": row.get::<String, _>("name"),
-                "type": row.get::<String, _>("type"),
-                "parent_id": row.get::<Option<i64>, _>("parent_id")
-            })
-        })
-        .collect();
-
-    // Transactions
-    let txn_rows = sqlx::query(
+    let mut stmt = conn.prepare(
         "SELECT t.id, t.date, t.type, t.amount, t.account_id, t.to_account_id,
                 t.category_id, t.memo, t.photo_path, t.created_at,
                 a.name as account_name,
@@ -576,125 +494,93 @@ async fn generate_backup_json(pool: &SqlitePool) -> Result<String, String> {
          LEFT JOIN accounts ta ON t.to_account_id = ta.id
          LEFT JOIN categories c ON t.category_id = c.id
          ORDER BY t.date DESC, t.created_at DESC",
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(|e| format!("Failed to fetch transactions: {}", e))?;
+    ).unwrap();
+    let transactions: Vec<serde_json::Value> = stmt.query_map([], |row| {
+        Ok(serde_json::json!({
+            "transaction": {
+                "id": row.get::<_, i64>(0)?,
+                "date": row.get::<_, String>(1)?,
+                "transaction_type": row.get::<_, String>(2)?,
+                "amount": row.get::<_, f64>(3)?,
+                "account_id": row.get::<_, i64>(4)?,
+                "to_account_id": row.get::<_, Option<i64>>(5)?,
+                "category_id": row.get::<_, Option<i64>>(6)?,
+                "memo": row.get::<_, Option<String>>(7)?,
+                "photo_path": row.get::<_, Option<String>>(8)?,
+                "created_at": row.get::<_, String>(9)?
+            },
+            "account_name": row.get::<_, String>(10)?,
+            "to_account_name": row.get::<_, Option<String>>(11)?,
+            "category_name": row.get::<_, Option<String>>(12)?
+        }))
+    }).unwrap().filter_map(Result::ok).collect();
 
-    let transactions: Vec<serde_json::Value> = txn_rows
-        .iter()
-        .map(|row| {
-            serde_json::json!({
-                "transaction": {
-                    "id": row.get::<i64, _>("id"),
-                    "date": row.get::<String, _>("date"),
-                    "transaction_type": row.get::<String, _>("type"),
-                    "amount": row.get::<f64, _>("amount"),
-                    "account_id": row.get::<i64, _>("account_id"),
-                    "to_account_id": row.get::<Option<i64>, _>("to_account_id"),
-                    "category_id": row.get::<Option<i64>, _>("category_id"),
-                    "memo": row.get::<Option<String>, _>("memo"),
-                    "photo_path": row.get::<Option<String>, _>("photo_path"),
-                    "created_at": row.get::<String, _>("created_at")
-                },
-                "account_name": row.get::<String, _>("account_name"),
-                "to_account_name": row.get::<Option<String>, _>("to_account_name"),
-                "category_name": row.get::<Option<String>, _>("category_name")
-            })
-        })
-        .collect();
+    let mut stmt = conn.prepare("SELECT id, category_id, amount, period, start_date FROM budgets ORDER BY id").unwrap();
+    let budgets: Vec<serde_json::Value> = stmt.query_map([], |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_, i64>(0)?,
+            "category_id": row.get::<_, i64>(1)?,
+            "amount": row.get::<_, f64>(2)?,
+            "period": row.get::<_, String>(3)?,
+            "start_date": row.get::<_, String>(4)?
+        }))
+    }).unwrap().filter_map(Result::ok).collect();
 
-    // Budgets
-    let budget_rows =
-        sqlx::query("SELECT id, category_id, amount, period, start_date FROM budgets ORDER BY id")
-            .fetch_all(pool)
-            .await
-            .map_err(|e| format!("Failed to fetch budgets: {}", e))?;
+    let mut stmt = conn.prepare("SELECT id, transaction_id, filename, created_at FROM transaction_photos ORDER BY id").unwrap();
+    let transaction_photos: Vec<serde_json::Value> = stmt.query_map([], |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_, i64>(0)?,
+            "transaction_id": row.get::<_, i64>(1)?,
+            "filename": row.get::<_, String>(2)?,
+            "created_at": row.get::<_, String>(3)?
+        }))
+    }).unwrap().filter_map(Result::ok).collect();
 
-    let budgets: Vec<serde_json::Value> = budget_rows
-        .iter()
-        .map(|row| {
-            serde_json::json!({
-                "id": row.get::<i64, _>("id"),
-                "category_id": row.get::<i64, _>("category_id"),
-                "amount": row.get::<f64, _>("amount"),
-                "period": row.get::<String, _>("period"),
-                "start_date": row.get::<String, _>("start_date")
-            })
-        })
-        .collect();
+    let mut stmt = conn.prepare("SELECT id, name, color, created_at FROM tags ORDER BY id").unwrap();
+    let tags: Vec<serde_json::Value> = stmt.query_map([], |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_, i64>(0)?,
+            "name": row.get::<_, String>(1)?,
+            "color": row.get::<_, String>(2)?,
+            "created_at": row.get::<_, String>(3)?
+        }))
+    }).unwrap().filter_map(Result::ok).collect();
 
-    // Transaction Photos (for zip backup restore)
-    let photo_rows = sqlx::query(
-        "SELECT id, transaction_id, filename, created_at FROM transaction_photos ORDER BY id"
-    )
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
+    let mut stmt = conn.prepare("SELECT transaction_id, tag_id FROM transaction_tags").unwrap();
+    let transaction_tags: Vec<serde_json::Value> = stmt.query_map([], |row| {
+        Ok(serde_json::json!({
+            "transaction_id": row.get::<_, i64>(0)?,
+            "tag_id": row.get::<_, i64>(1)?
+        }))
+    }).unwrap().filter_map(Result::ok).collect();
 
-    let transaction_photos: Vec<serde_json::Value> = photo_rows
-        .iter()
-        .map(|row| {
-            serde_json::json!({
-                "id": row.get::<i64, _>("id"),
-                "transaction_id": row.get::<i64, _>("transaction_id"),
-                "filename": row.get::<String, _>("filename"),
-                "created_at": row.get::<String, _>("created_at")
-            })
-        })
-        .collect();
+    let mut stmt = conn.prepare("SELECT id, name, target_amount, target_date, linked_account_id, color, icon, status, created_at, updated_at FROM savings_goals ORDER BY id").unwrap();
+    let savings_goals: Vec<serde_json::Value> = stmt.query_map([], |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_, i64>(0)?,
+            "name": row.get::<_, String>(1)?,
+            "target_amount": row.get::<_, f64>(2)?,
+            "target_date": row.get::<_, Option<String>>(3)?,
+            "linked_account_id": row.get::<_, Option<i64>>(4)?,
+            "color": row.get::<_, String>(5)?,
+            "icon": row.get::<_, String>(6)?,
+            "status": row.get::<_, String>(7)?,
+            "created_at": row.get::<_, String>(8)?,
+            "updated_at": row.get::<_, String>(9)?
+        }))
+    }).unwrap().filter_map(Result::ok).collect();
 
-    // Tags
-    let tag_rows = sqlx::query("SELECT id, name, color, created_at FROM tags ORDER BY id")
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
-    let tags: Vec<serde_json::Value> = tag_rows.iter().map(|row| serde_json::json!({
-        "id": row.get::<i64, _>("id"),
-        "name": row.get::<String, _>("name"),
-        "color": row.get::<String, _>("color"),
-        "created_at": row.get::<String, _>("created_at")
-    })).collect();
-
-    let txn_tag_rows = sqlx::query("SELECT transaction_id, tag_id FROM transaction_tags")
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
-    let transaction_tags: Vec<serde_json::Value> = txn_tag_rows.iter().map(|row| serde_json::json!({
-        "transaction_id": row.get::<i64, _>("transaction_id"),
-        "tag_id": row.get::<i64, _>("tag_id")
-    })).collect();
-
-    // Savings Goals
-    let goal_rows = sqlx::query("SELECT id, name, target_amount, target_date, linked_account_id, color, icon, status, created_at, updated_at FROM savings_goals ORDER BY id")
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
-    let savings_goals: Vec<serde_json::Value> = goal_rows.iter().map(|row| serde_json::json!({
-        "id": row.get::<i64, _>("id"),
-        "name": row.get::<String, _>("name"),
-        "target_amount": row.get::<f64, _>("target_amount"),
-        "target_date": row.get::<Option<String>, _>("target_date"),
-        "linked_account_id": row.get::<Option<i64>, _>("linked_account_id"),
-        "color": row.get::<String, _>("color"),
-        "icon": row.get::<String, _>("icon"),
-        "status": row.get::<String, _>("status"),
-        "created_at": row.get::<String, _>("created_at"),
-        "updated_at": row.get::<String, _>("updated_at")
-    })).collect();
-
-    let goal_contrib_rows = sqlx::query("SELECT id, goal_id, amount, contribution_date, note, created_at FROM goal_contributions ORDER BY id")
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
-    let goal_contributions: Vec<serde_json::Value> = goal_contrib_rows.iter().map(|row| serde_json::json!({
-        "id": row.get::<i64, _>("id"),
-        "goal_id": row.get::<i64, _>("goal_id"),
-        "amount": row.get::<f64, _>("amount"),
-        "contribution_date": row.get::<String, _>("contribution_date"),
-        "note": row.get::<Option<String>, _>("note"),
-        "created_at": row.get::<String, _>("created_at")
-    })).collect();
+    let mut stmt = conn.prepare("SELECT id, goal_id, amount, contribution_date, note, created_at FROM goal_contributions ORDER BY id").unwrap();
+    let goal_contributions: Vec<serde_json::Value> = stmt.query_map([], |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_, i64>(0)?,
+            "goal_id": row.get::<_, i64>(1)?,
+            "amount": row.get::<_, f64>(2)?,
+            "contribution_date": row.get::<_, String>(3)?,
+            "note": row.get::<_, Option<String>>(4)?,
+            "created_at": row.get::<_, String>(5)?
+        }))
+    }).unwrap().filter_map(Result::ok).collect();
 
     let backup = serde_json::json!({
         "version": "1.0",
@@ -712,11 +598,9 @@ async fn generate_backup_json(pool: &SqlitePool) -> Result<String, String> {
         }
     });
 
-    serde_json::to_string_pretty(&backup)
-        .map_err(|e| format!("Failed to serialize backup: {}", e))
+    serde_json::to_string_pretty(&backup).map_err(|e| format!("Failed to serialize backup: {}", e))
 }
 
-/// Recursively add a directory's contents to a zip file
 fn add_directory_to_zip(
     zip: &mut zip::ZipWriter<fs::File>,
     source_dir: &Path,
@@ -748,7 +632,6 @@ fn add_directory_to_zip(
     Ok(())
 }
 
-/// Delete oldest backup files when count exceeds the retention limit
 fn apply_retention(backup_path: &str, max_count: i64) -> Result<(), String> {
     if max_count <= 0 {
         return Ok(());
@@ -769,7 +652,6 @@ fn apply_retention(backup_path: &str, max_count: i64) -> Result<(), String> {
         let path = entry.path();
         let name = entry.file_name().to_str().unwrap_or("").to_string();
 
-        // Only consider our backup files
         if name.starts_with("money_manager_backup_") && name.ends_with(".zip") {
             if let Ok(metadata) = fs::metadata(&path) {
                 if let Ok(modified) = metadata.modified() {
@@ -779,10 +661,8 @@ fn apply_retention(backup_path: &str, max_count: i64) -> Result<(), String> {
         }
     }
 
-    // Sort by modification time (newest first)
     backups.sort_by(|a, b| b.1.cmp(&a.1));
 
-    // Delete excess backups
     if backups.len() as i64 > max_count {
         for (path, _) in &backups[max_count as usize..] {
             match fs::remove_file(path) {
@@ -795,7 +675,6 @@ fn apply_retention(backup_path: &str, max_count: i64) -> Result<(), String> {
     Ok(())
 }
 
-/// Count backup zip files in the configured directory
 fn count_backup_files(backup_path: &str) -> i64 {
     let dir = Path::new(backup_path);
     if !dir.exists() {
@@ -815,15 +694,14 @@ fn count_backup_files(backup_path: &str) -> i64 {
         .unwrap_or(0)
 }
 
-/// Check if a backup is due based on frequency and last run
 fn is_backup_due(last_run: &str, frequency: &str) -> bool {
     if last_run.is_empty() {
-        return true; // Never run before
+        return true;
     }
 
     let last = match chrono::DateTime::parse_from_rfc3339(last_run) {
         Ok(dt) => dt.with_timezone(&chrono::Utc),
-        Err(_) => return true, // Can't parse, assume due
+        Err(_) => return true,
     };
 
     let now = chrono::Utc::now();
@@ -833,11 +711,10 @@ fn is_backup_due(last_run: &str, frequency: &str) -> bool {
         "DAILY" => elapsed.num_hours() >= 24,
         "WEEKLY" => elapsed.num_days() >= 7,
         "MONTHLY" => elapsed.num_days() >= 30,
-        _ => elapsed.num_days() >= 7, // Default to weekly
+        _ => elapsed.num_days() >= 7,
     }
 }
 
-/// Calculate the next due date based on last run and frequency
 fn calculate_next_due(last_run: &str, frequency: &str) -> Option<String> {
     let last = chrono::DateTime::parse_from_rfc3339(last_run).ok()?;
 
@@ -852,7 +729,6 @@ fn calculate_next_due(last_run: &str, frequency: &str) -> Option<String> {
     Some(next.to_rfc3339())
 }
 
-/// Check if the backup is overdue (> 2× the configured frequency)
 fn check_is_overdue(last_run: &str, frequency: &str, enabled: bool) -> bool {
     if !enabled || last_run.is_empty() {
         return false;

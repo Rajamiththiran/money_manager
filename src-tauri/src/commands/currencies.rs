@@ -2,14 +2,15 @@
 use crate::models::currency::{
     CurrencyConversion, ExchangeRate, ExchangeRateSummary, SetExchangeRateInput, SupportedCurrency,
 };
-use sqlx::{Row, SqlitePool};
+use crate::AppState;
+use rusqlite::{params, OptionalExtension};
+use serde::Serialize;
 use tauri::State;
 
 // ======================== SUPPORTED CURRENCIES ========================
 
-/// Returns the list of supported currencies (hardcoded, matches frontend SettingsView)
 #[tauri::command]
-pub async fn get_supported_currencies() -> Result<Vec<SupportedCurrency>, String> {
+pub fn get_supported_currencies() -> Result<Vec<SupportedCurrency>, String> {
     Ok(vec![
         SupportedCurrency {
             code: "LKR".to_string(),
@@ -66,55 +67,49 @@ pub async fn get_supported_currencies() -> Result<Vec<SupportedCurrency>, String
 
 // ======================== PRIMARY CURRENCY ========================
 
-/// Get the primary (home) currency from app_settings
 #[tauri::command]
-pub async fn get_primary_currency(pool: State<'_, SqlitePool>) -> Result<String, String> {
-    let row = sqlx::query("SELECT value FROM app_settings WHERE key = 'primary_currency'")
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Failed to fetch primary currency: {}", e))?;
+pub fn get_primary_currency(state: State<'_, AppState>) -> Result<String, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    match row {
-        Some(r) => Ok(r.get("value")),
-        None => Ok("LKR".to_string()),
-    }
+    get_primary_currency_internal(&conn)
 }
 
-/// Set the primary (home) currency in app_settings
 #[tauri::command]
-pub async fn set_primary_currency(
-    pool: State<'_, SqlitePool>,
+pub fn set_primary_currency(
+    state: State<'_, AppState>,
     currency_code: String,
 ) -> Result<(), String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     let code = currency_code.trim().to_uppercase();
     if code.is_empty() || code.len() != 3 {
         return Err("Currency code must be a 3-letter code (e.g., LKR, USD)".to_string());
     }
 
-    sqlx::query(
+    conn.execute(
         r#"
         INSERT INTO app_settings (key, value, updated_at)
-        VALUES ('primary_currency', ?, datetime('now'))
+        VALUES ('primary_currency', ?1, datetime('now'))
         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
         "#,
-    )
-    .bind(&code)
-    .execute(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to set primary currency: {}", e))?;
+        params![code],
+    ).map_err(|e| format!("Failed to set primary currency: {}", e))?;
 
     Ok(())
 }
 
 // ======================== EXCHANGE RATE CRUD ========================
 
-/// Set (upsert) an exchange rate for a currency pair on a specific date.
-/// If a rate already exists for the same pair + date, it will be updated.
 #[tauri::command]
-pub async fn set_exchange_rate(
-    pool: State<'_, SqlitePool>,
+pub fn set_exchange_rate(
+    state: State<'_, AppState>,
     input: SetExchangeRateInput,
 ) -> Result<i64, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     // Validate inputs
     let from = input.from_currency.trim().to_uppercase();
     let to = input.to_currency.trim().to_uppercase();
@@ -135,208 +130,113 @@ pub async fn set_exchange_rate(
         return Err("Effective date is required".to_string());
     }
 
-    // Validate date format (YYYY-MM-DD)
     if chrono::NaiveDate::parse_from_str(&input.effective_date, "%Y-%m-%d").is_err() {
         return Err("Invalid date format. Use YYYY-MM-DD".to_string());
     }
 
-    let result = sqlx::query(
+    conn.execute(
         r#"
         INSERT INTO exchange_rates (from_currency, to_currency, rate, effective_date, updated_at)
-        VALUES (?, ?, ?, ?, datetime('now'))
+        VALUES (?1, ?2, ?3, ?4, datetime('now'))
         ON CONFLICT(from_currency, to_currency, effective_date)
         DO UPDATE SET rate = excluded.rate, updated_at = datetime('now')
         "#,
-    )
-    .bind(&from)
-    .bind(&to)
-    .bind(input.rate)
-    .bind(&input.effective_date)
-    .execute(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to set exchange rate: {}", e))?;
+        params![from, to, input.rate, input.effective_date],
+    ).map_err(|e| format!("Failed to set exchange rate: {}", e))?;
 
-    Ok(result.last_insert_rowid())
+    Ok(conn.last_insert_rowid())
 }
 
-/// Get the exchange rate for a currency pair on a specific date.
-/// Falls back to the most recent rate before the given date if no exact match.
 #[tauri::command]
-pub async fn get_exchange_rate(
-    pool: State<'_, SqlitePool>,
+pub fn get_exchange_rate(
+    state: State<'_, AppState>,
     from_currency: String,
     to_currency: String,
     date: String,
 ) -> Result<ExchangeRate, String> {
-    let from = from_currency.trim().to_uppercase();
-    let to = to_currency.trim().to_uppercase();
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    if from == to {
-        // Same currency = rate of 1.0, return a synthetic rate
-        return Ok(ExchangeRate {
-            id: 0,
-            from_currency: from.clone(),
-            to_currency: to.clone(),
-            rate: 1.0,
-            effective_date: date.clone(),
-            created_at: String::new(),
-            updated_at: String::new(),
-        });
-    }
-
-    // Try direct rate: from -> to, most recent on or before the date
-    let direct = sqlx::query(
-        r#"
-        SELECT id, from_currency, to_currency, rate, effective_date, created_at, updated_at
-        FROM exchange_rates
-        WHERE from_currency = ? AND to_currency = ? AND effective_date <= ?
-        ORDER BY effective_date DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(&from)
-    .bind(&to)
-    .bind(&date)
-    .fetch_optional(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch exchange rate: {}", e))?;
-
-    if let Some(row) = direct {
-        return Ok(ExchangeRate {
-            id: row.get("id"),
-            from_currency: row.get("from_currency"),
-            to_currency: row.get("to_currency"),
-            rate: row.get("rate"),
-            effective_date: row.get("effective_date"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-        });
-    }
-
-    // Try inverse rate: to -> from, and invert it
-    let inverse = sqlx::query(
-        r#"
-        SELECT id, from_currency, to_currency, rate, effective_date, created_at, updated_at
-        FROM exchange_rates
-        WHERE from_currency = ? AND to_currency = ? AND effective_date <= ?
-        ORDER BY effective_date DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(&to)
-    .bind(&from)
-    .bind(&date)
-    .fetch_optional(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch inverse exchange rate: {}", e))?;
-
-    if let Some(row) = inverse {
-        let stored_rate: f64 = row.get("rate");
-        let inverted_rate = if stored_rate > 0.0 {
-            1.0 / stored_rate
-        } else {
-            return Err("Stored rate is invalid (zero)".to_string());
-        };
-
-        return Ok(ExchangeRate {
-            id: row.get("id"),
-            from_currency: from,
-            to_currency: to,
-            rate: inverted_rate,
-            effective_date: row.get("effective_date"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-        });
-    }
-
-    Err(format!(
-        "No exchange rate found for {} → {} on or before {}",
-        from, to, date
-    ))
+    get_exchange_rate_internal(&conn, &from_currency, &to_currency, &date)
 }
 
-/// Get all exchange rates, ordered by date descending
 #[tauri::command]
-pub async fn get_exchange_rates(
-    pool: State<'_, SqlitePool>,
+pub fn get_exchange_rates(
+    state: State<'_, AppState>,
     from_currency: Option<String>,
     to_currency: Option<String>,
     limit: Option<i32>,
 ) -> Result<Vec<ExchangeRate>, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     let query_limit = limit.unwrap_or(100);
 
-    let rows = match (&from_currency, &to_currency) {
+    let rates = match (&from_currency, &to_currency) {
         (Some(from), Some(to)) => {
-            sqlx::query(
+            let mut stmt = conn.prepare(
                 r#"
                 SELECT id, from_currency, to_currency, rate, effective_date, created_at, updated_at
                 FROM exchange_rates
-                WHERE from_currency = ? AND to_currency = ?
+                WHERE from_currency = ?1 AND to_currency = ?2
                 ORDER BY effective_date DESC
-                LIMIT ?
+                LIMIT ?3
                 "#,
-            )
-            .bind(from.trim().to_uppercase())
-            .bind(to.trim().to_uppercase())
-            .bind(query_limit)
-            .fetch_all(pool.inner())
-            .await
+            ).unwrap();
+            stmt.query_map(params![from.trim().to_uppercase(), to.trim().to_uppercase(), query_limit], row_to_exchange_rate)
+                .unwrap().filter_map(Result::ok).collect()
         }
         (Some(from), None) => {
-            sqlx::query(
+            let mut stmt = conn.prepare(
                 r#"
                 SELECT id, from_currency, to_currency, rate, effective_date, created_at, updated_at
                 FROM exchange_rates
-                WHERE from_currency = ?
+                WHERE from_currency = ?1
                 ORDER BY effective_date DESC
-                LIMIT ?
+                LIMIT ?2
                 "#,
-            )
-            .bind(from.trim().to_uppercase())
-            .bind(query_limit)
-            .fetch_all(pool.inner())
-            .await
+            ).unwrap();
+            stmt.query_map(params![from.trim().to_uppercase(), query_limit], row_to_exchange_rate)
+                .unwrap().filter_map(Result::ok).collect()
         }
         _ => {
-            sqlx::query(
+            let mut stmt = conn.prepare(
                 r#"
                 SELECT id, from_currency, to_currency, rate, effective_date, created_at, updated_at
                 FROM exchange_rates
                 ORDER BY effective_date DESC
-                LIMIT ?
+                LIMIT ?1
                 "#,
-            )
-            .bind(query_limit)
-            .fetch_all(pool.inner())
-            .await
+            ).unwrap();
+            stmt.query_map(params![query_limit], row_to_exchange_rate)
+                .unwrap().filter_map(Result::ok).collect()
         }
-    }
-    .map_err(|e| format!("Failed to fetch exchange rates: {}", e))?;
+    };
 
-    Ok(rows
-        .iter()
-        .map(|row| ExchangeRate {
-            id: row.get("id"),
-            from_currency: row.get("from_currency"),
-            to_currency: row.get("to_currency"),
-            rate: row.get("rate"),
-            effective_date: row.get("effective_date"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-        })
-        .collect())
+    Ok(rates)
 }
 
-/// Delete a specific exchange rate entry by ID
+fn row_to_exchange_rate(row: &rusqlite::Row) -> rusqlite::Result<ExchangeRate> {
+    Ok(ExchangeRate {
+        id: row.get(0)?,
+        from_currency: row.get(1)?,
+        to_currency: row.get(2)?,
+        rate: row.get(3)?,
+        effective_date: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+    })
+}
+
 #[tauri::command]
-pub async fn delete_exchange_rate(pool: State<'_, SqlitePool>, rate_id: i64) -> Result<(), String> {
-    let result = sqlx::query("DELETE FROM exchange_rates WHERE id = ?")
-        .bind(rate_id)
-        .execute(pool.inner())
-        .await
+pub fn delete_exchange_rate(state: State<'_, AppState>, rate_id: i64) -> Result<(), String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let rows_affected = conn.execute("DELETE FROM exchange_rates WHERE id = ?1", params![rate_id])
         .map_err(|e| format!("Failed to delete exchange rate: {}", e))?;
 
-    if result.rows_affected() == 0 {
+    if rows_affected == 0 {
         return Err("Exchange rate not found".to_string());
     }
 
@@ -345,16 +245,17 @@ pub async fn delete_exchange_rate(pool: State<'_, SqlitePool>, rate_id: i64) -> 
 
 // ======================== CURRENCY CONVERSION ========================
 
-/// Convert an amount from one currency to another using stored rates.
-/// Uses the nearest available rate on or before the given date.
 #[tauri::command]
-pub async fn convert_amount(
-    pool: State<'_, SqlitePool>,
+pub fn convert_amount(
+    state: State<'_, AppState>,
     amount: f64,
     from_currency: String,
     to_currency: String,
     date: String,
 ) -> Result<CurrencyConversion, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     if amount < 0.0 {
         return Err("Amount must be non-negative".to_string());
     }
@@ -362,7 +263,6 @@ pub async fn convert_amount(
     let from = from_currency.trim().to_uppercase();
     let to = to_currency.trim().to_uppercase();
 
-    // Same currency — no conversion needed
     if from == to {
         return Ok(CurrencyConversion {
             from_currency: from,
@@ -374,12 +274,10 @@ pub async fn convert_amount(
         });
     }
 
-    // Get the rate (handles direct + inverse fallback internally)
-    let rate = get_exchange_rate_internal(pool.inner(), &from, &to, &date).await?;
+    let rate = get_exchange_rate_internal(&conn, &from, &to, &date)?;
 
     let converted = amount * rate.rate;
 
-    // Round to 2 decimal places for most currencies, 0 for JPY
     let converted_rounded = if to == "JPY" {
         converted.round()
     } else {
@@ -398,12 +296,14 @@ pub async fn convert_amount(
 
 // ======================== RATE SUMMARIES ========================
 
-/// Get a summary of latest rates for each unique currency pair
 #[tauri::command]
-pub async fn get_exchange_rate_summaries(
-    pool: State<'_, SqlitePool>,
+pub fn get_exchange_rate_summaries(
+    state: State<'_, AppState>,
 ) -> Result<Vec<ExchangeRateSummary>, String> {
-    let rows = sqlx::query(
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let mut stmt = conn.prepare(
         r#"
         SELECT
             er.from_currency,
@@ -423,37 +323,34 @@ pub async fn get_exchange_rate_summaries(
                  AND er.effective_date = counts.max_date
         ORDER BY er.from_currency, er.to_currency
         "#,
-    )
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch rate summaries: {}", e))?;
+    ).map_err(|e| format!("Query error: {}", e))?;
 
-    Ok(rows
-        .iter()
-        .map(|row| ExchangeRateSummary {
-            from_currency: row.get("from_currency"),
-            to_currency: row.get("to_currency"),
-            latest_rate: row.get("latest_rate"),
-            latest_date: row.get("latest_date"),
-            rate_count: row.get("rate_count"),
+    let summaries = stmt.query_map([], |row| {
+        Ok(ExchangeRateSummary {
+            from_currency: row.get(0)?,
+            to_currency: row.get(1)?,
+            latest_rate: row.get(2)?,
+            latest_date: row.get(3)?,
+            rate_count: row.get(4)?,
         })
-        .collect())
+    }).unwrap().filter_map(Result::ok).collect();
+
+    Ok(summaries)
 }
 
-// ======================== BULK CONVERSION (for reports) ========================
+// ======================== BULK CONVERSION ========================
 
-/// Convert multiple account balances to the primary currency.
-/// Useful for dashboard net worth calculations with multi-currency accounts.
 #[tauri::command]
-pub async fn convert_balances_to_primary(
-    pool: State<'_, SqlitePool>,
+pub fn convert_balances_to_primary(
+    state: State<'_, AppState>,
 ) -> Result<Vec<ConvertedBalance>, String> {
-    // Get primary currency
-    let primary = get_primary_currency_internal(pool.inner()).await?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let primary = get_primary_currency_internal(&conn)?;
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
 
-    // Get all accounts with balances
-    let rows = sqlx::query(
+    let mut stmt = conn.prepare(
         r#"
         SELECT
             a.id,
@@ -466,38 +363,39 @@ pub async fn convert_balances_to_primary(
         GROUP BY a.id
         ORDER BY a.name
         "#,
-    )
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch account balances: {}", e))?;
+    ).map_err(|e| format!("Query error: {}", e))?;
+
+    let rows: Vec<(i64, String, String, f64, f64)> = stmt.query_map([], |row| {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+        ))
+    }).unwrap().filter_map(Result::ok).collect();
 
     let mut results = Vec::new();
 
-    for row in rows.iter() {
-        let currency: String = row.get("currency");
-        let initial_balance: f64 = row.get("initial_balance");
-        let journal_balance: f64 = row.get("journal_balance");
+    for (id, name, currency, initial_balance, journal_balance) in rows {
         let original_balance = initial_balance + journal_balance;
 
         let (converted_balance, rate_used) = if currency == primary {
             (original_balance, 1.0)
         } else {
-            match get_exchange_rate_internal(pool.inner(), &currency, &primary, &today).await {
+            match get_exchange_rate_internal(&conn, &currency, &primary, &today) {
                 Ok(rate) => {
                     let converted = original_balance * rate.rate;
                     let rounded = (converted * 100.0).round() / 100.0;
                     (rounded, rate.rate)
                 }
-                Err(_) => {
-                    // No rate available — return original with rate 0 to signal missing rate
-                    (original_balance, 0.0)
-                }
+                Err(_) => (original_balance, 0.0),
             }
         };
 
         results.push(ConvertedBalance {
-            account_id: row.get("id"),
-            account_name: row.get("name"),
+            account_id: id,
+            account_name: name,
             original_currency: currency,
             original_balance,
             primary_currency: primary.clone(),
@@ -511,18 +409,20 @@ pub async fn convert_balances_to_primary(
 
 // ======================== INTERNAL HELPERS ========================
 
-/// Internal helper: get exchange rate without tauri::State wrapper
-async fn get_exchange_rate_internal(
-    pool: &SqlitePool,
+fn get_exchange_rate_internal(
+    conn: &rusqlite::Connection,
     from: &str,
     to: &str,
     date: &str,
 ) -> Result<ExchangeRate, String> {
+    let from = from.trim().to_uppercase();
+    let to = to.trim().to_uppercase();
+
     if from == to {
         return Ok(ExchangeRate {
             id: 0,
-            from_currency: from.to_string(),
-            to_currency: to.to_string(),
+            from_currency: from,
+            to_currency: to,
             rate: 1.0,
             effective_date: date.to_string(),
             created_at: String::new(),
@@ -530,67 +430,44 @@ async fn get_exchange_rate_internal(
         });
     }
 
-    // Try direct rate
-    let direct = sqlx::query(
+    let mut direct_stmt = conn.prepare(
         r#"
         SELECT id, from_currency, to_currency, rate, effective_date, created_at, updated_at
         FROM exchange_rates
-        WHERE from_currency = ? AND to_currency = ? AND effective_date <= ?
+        WHERE from_currency = ?1 AND to_currency = ?2 AND effective_date <= ?3
         ORDER BY effective_date DESC
         LIMIT 1
         "#,
-    )
-    .bind(from)
-    .bind(to)
-    .bind(date)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| format!("Failed to fetch exchange rate: {}", e))?;
+    ).unwrap();
 
-    if let Some(row) = direct {
-        return Ok(ExchangeRate {
-            id: row.get("id"),
-            from_currency: row.get("from_currency"),
-            to_currency: row.get("to_currency"),
-            rate: row.get("rate"),
-            effective_date: row.get("effective_date"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-        });
+    let direct = direct_stmt.query_row(params![from, to, date], row_to_exchange_rate).optional().unwrap_or(None);
+
+    if let Some(rate) = direct {
+        return Ok(rate);
     }
 
-    // Try inverse rate
-    let inverse = sqlx::query(
+    let mut inverse_stmt = conn.prepare(
         r#"
         SELECT id, from_currency, to_currency, rate, effective_date, created_at, updated_at
         FROM exchange_rates
-        WHERE from_currency = ? AND to_currency = ? AND effective_date <= ?
+        WHERE from_currency = ?1 AND to_currency = ?2 AND effective_date <= ?3
         ORDER BY effective_date DESC
         LIMIT 1
         "#,
-    )
-    .bind(to)
-    .bind(from)
-    .bind(date)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| format!("Failed to fetch inverse exchange rate: {}", e))?;
+    ).unwrap();
 
-    if let Some(row) = inverse {
-        let stored_rate: f64 = row.get("rate");
-        if stored_rate <= 0.0 {
+    let inverse = inverse_stmt.query_row(params![to, from, date], row_to_exchange_rate).optional().unwrap_or(None);
+
+    if let Some(mut rate) = inverse {
+        if rate.rate <= 0.0 {
             return Err("Stored rate is invalid (zero or negative)".to_string());
         }
 
-        return Ok(ExchangeRate {
-            id: row.get("id"),
-            from_currency: from.to_string(),
-            to_currency: to.to_string(),
-            rate: 1.0 / stored_rate,
-            effective_date: row.get("effective_date"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-        });
+        rate.from_currency = from;
+        rate.to_currency = to;
+        rate.rate = 1.0 / rate.rate;
+
+        return Ok(rate);
     }
 
     Err(format!(
@@ -599,22 +476,14 @@ async fn get_exchange_rate_internal(
     ))
 }
 
-/// Internal helper: get primary currency without tauri::State wrapper
-async fn get_primary_currency_internal(pool: &SqlitePool) -> Result<String, String> {
-    let row = sqlx::query("SELECT value FROM app_settings WHERE key = 'primary_currency'")
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| format!("Failed to fetch primary currency: {}", e))?;
+fn get_primary_currency_internal(conn: &rusqlite::Connection) -> Result<String, String> {
+    let mut stmt = conn.prepare("SELECT value FROM app_settings WHERE key = 'primary_currency'").unwrap();
+    let val: Option<String> = stmt.query_row([], |row| row.get(0)).optional().unwrap_or(None);
 
-    match row {
-        Some(r) => Ok(r.get("value")),
-        None => Ok("LKR".to_string()),
-    }
+    Ok(val.unwrap_or_else(|| "LKR".to_string()))
 }
 
 // ======================== ADDITIONAL STRUCTS ========================
-
-use serde::Serialize;
 
 #[derive(Debug, Serialize)]
 pub struct ConvertedBalance {

@@ -4,51 +4,48 @@ use crate::models::credit_card::{
     CreditCardWithDetails, SettlementInput, StatementTransaction, StatementWithTransactions,
     UpdateCreditCardSettingsInput,
 };
+use crate::AppState;
 use chrono::{Datelike, Local, NaiveDate};
-use sqlx::{Row, SqlitePool};
+use rusqlite::{params, OptionalExtension};
 use tauri::State;
 
 // ======================== CRUD ========================
 
 #[tauri::command]
-pub async fn create_credit_card_settings(
-    pool: State<'_, SqlitePool>,
+pub fn create_credit_card_settings(
+    state: State<'_, AppState>,
     input: CreateCreditCardSettingsInput,
 ) -> Result<CreditCardSettings, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     // Validate account exists and belongs to Credit Card group (LIABILITY)
-    let account_row = sqlx::query(
+    let account_type: Option<String> = conn.query_row(
         r#"
-        SELECT a.id, ag.type 
+        SELECT ag.type 
         FROM accounts a 
         JOIN account_groups ag ON a.group_id = ag.id 
-        WHERE a.id = ?
+        WHERE a.id = ?1
         "#,
-    )
-    .bind(input.account_id)
-    .fetch_optional(pool.inner())
-    .await
-    .map_err(|e| format!("Database error: {}", e))?
-    .ok_or_else(|| "Account not found".to_string())?;
+        params![input.account_id],
+        |row| row.get(0),
+    ).optional().map_err(|e| format!("Database error: {}", e))?.flatten();
 
-    let account_type: String = account_row.get("type");
-    if account_type != "LIABILITY" {
-        return Err(
-            "Credit card settings can only be created for LIABILITY accounts (Credit Card group)"
-                .to_string(),
-        );
+    match account_type {
+        Some(t) if t == "LIABILITY" => {}
+        Some(_) => return Err("Credit card settings can only be created for LIABILITY accounts (Credit Card group)".to_string()),
+        None => return Err("Account not found".to_string()),
     }
 
     // Check if settings already exist for this account
-    let existing = sqlx::query("SELECT id FROM credit_card_settings WHERE account_id = ?")
-        .bind(input.account_id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?;
+    let existing: bool = conn.query_row(
+        "SELECT COUNT(id) FROM credit_card_settings WHERE account_id = ?1",
+        params![input.account_id],
+        |row| row.get::<_, i64>(0),
+    ).unwrap_or(0) > 0;
 
-    if existing.is_some() {
-        return Err(
-            "Credit card settings already exist for this account. Use update instead.".to_string(),
-        );
+    if existing {
+        return Err("Credit card settings already exist for this account. Use update instead.".to_string());
     }
 
     // Validate statement_day and payment_due_day
@@ -65,25 +62,21 @@ pub async fn create_credit_card_settings(
 
     // Validate settlement account if provided
     if let Some(settlement_id) = input.settlement_account_id {
-        let settlement_row = sqlx::query(
+        let settlement_type: Option<String> = conn.query_row(
             r#"
             SELECT ag.type 
             FROM accounts a 
             JOIN account_groups ag ON a.group_id = ag.id 
-            WHERE a.id = ?
+            WHERE a.id = ?1
             "#,
-        )
-        .bind(settlement_id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?
-        .ok_or_else(|| "Settlement account not found".to_string())?;
+            params![settlement_id],
+            |row| row.get(0),
+        ).optional().map_err(|e| format!("Database error: {}", e))?.flatten();
 
-        let settlement_type: String = settlement_row.get("type");
-        if settlement_type != "ASSET" {
-            return Err(
-                "Settlement account must be an ASSET account (Bank/Cash/Savings)".to_string(),
-            );
+        match settlement_type {
+            Some(t) if t == "ASSET" => {}
+            Some(_) => return Err("Settlement account must be an ASSET account (Bank/Cash/Savings)".to_string()),
+            None => return Err("Settlement account not found".to_string()),
         }
 
         if settlement_id == input.account_id {
@@ -94,40 +87,41 @@ pub async fn create_credit_card_settings(
     let min_payment_pct = input.minimum_payment_percentage.unwrap_or(5.0);
     let auto_settlement = input.auto_settlement_enabled.unwrap_or(false);
 
-    let result = sqlx::query(
+    conn.execute(
         r#"
         INSERT INTO credit_card_settings (
             account_id, credit_limit, statement_day, payment_due_day,
             minimum_payment_percentage, auto_settlement_enabled, settlement_account_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
         "#,
-    )
-    .bind(input.account_id)
-    .bind(input.credit_limit)
-    .bind(input.statement_day)
-    .bind(input.payment_due_day)
-    .bind(min_payment_pct)
-    .bind(auto_settlement as i32)
-    .bind(input.settlement_account_id)
-    .execute(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to create credit card settings: {}", e))?;
+        params![
+            input.account_id,
+            input.credit_limit,
+            input.statement_day,
+            input.payment_due_day,
+            min_payment_pct,
+            auto_settlement as i32,
+            input.settlement_account_id
+        ],
+    ).map_err(|e| format!("Failed to create credit card settings: {}", e))?;
 
-    let settings_id = result.last_insert_rowid();
-    get_credit_card_settings_by_id(pool, settings_id).await
+    let settings_id = conn.last_insert_rowid();
+    get_credit_card_settings_by_id_internal(&conn, settings_id)
 }
 
 #[tauri::command]
-pub async fn update_credit_card_settings(
-    pool: State<'_, SqlitePool>,
+pub fn update_credit_card_settings(
+    state: State<'_, AppState>,
     input: UpdateCreditCardSettingsInput,
 ) -> Result<CreditCardSettings, String> {
-    let exists = sqlx::query("SELECT id FROM credit_card_settings WHERE id = ?")
-        .bind(input.id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?
-        .is_some();
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let exists: bool = conn.query_row(
+        "SELECT COUNT(id) FROM credit_card_settings WHERE id = ?1",
+        params![input.id],
+        |row| row.get::<_, i64>(0),
+    ).unwrap_or(0) > 0;
 
     if !exists {
         return Err("Credit card settings not found".to_string());
@@ -169,23 +163,21 @@ pub async fn update_credit_card_settings(
 
     if let Some(settlement_id) = input.settlement_account_id {
         // Validate settlement account
-        let settlement_row = sqlx::query(
+        let settlement_type: Option<String> = conn.query_row(
             r#"
             SELECT ag.type 
             FROM accounts a 
             JOIN account_groups ag ON a.group_id = ag.id 
-            WHERE a.id = ?
+            WHERE a.id = ?1
             "#,
-        )
-        .bind(settlement_id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?
-        .ok_or_else(|| "Settlement account not found".to_string())?;
+            params![settlement_id],
+            |row| row.get(0),
+        ).optional().map_err(|e| format!("Database error: {}", e))?.flatten();
 
-        let settlement_type: String = settlement_row.get("type");
-        if settlement_type != "ASSET" {
-            return Err("Settlement account must be an ASSET account".to_string());
+        match settlement_type {
+            Some(t) if t == "ASSET" => {}
+            Some(_) => return Err("Settlement account must be an ASSET account".to_string()),
+            None => return Err("Settlement account not found".to_string()),
         }
         set_clauses.push(format!("settlement_account_id = {}", settlement_id));
     }
@@ -202,29 +194,27 @@ pub async fn update_credit_card_settings(
         input.id
     );
 
-    sqlx::query(&query)
-        .execute(pool.inner())
-        .await
+    conn.execute(&query, [])
         .map_err(|e| format!("Failed to update credit card settings: {}", e))?;
 
-    get_credit_card_settings_by_id(pool, input.id).await
+    get_credit_card_settings_by_id_internal(&conn, input.id)
 }
 
 #[tauri::command]
-pub async fn delete_credit_card_settings(
-    pool: State<'_, SqlitePool>,
+pub fn delete_credit_card_settings(
+    state: State<'_, AppState>,
     settings_id: i64,
 ) -> Result<(), String> {
-    // Check for existing statements
-    let count_row = sqlx::query(
-        "SELECT COUNT(*) as count FROM credit_card_statements WHERE credit_card_id = ?",
-    )
-    .bind(settings_id)
-    .fetch_one(pool.inner())
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    let count: i64 = count_row.get("count");
+    // Check for existing statements
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM credit_card_statements WHERE credit_card_id = ?1",
+        params![settings_id],
+        |row| row.get(0),
+    ).map_err(|e| format!("Database error: {}", e))?;
+
     if count > 0 {
         return Err(
             "Cannot delete credit card settings with existing statements. Delete statements first."
@@ -232,13 +222,10 @@ pub async fn delete_credit_card_settings(
         );
     }
 
-    let result = sqlx::query("DELETE FROM credit_card_settings WHERE id = ?")
-        .bind(settings_id)
-        .execute(pool.inner())
-        .await
+    let rows_affected = conn.execute("DELETE FROM credit_card_settings WHERE id = ?1", params![settings_id])
         .map_err(|e| format!("Failed to delete credit card settings: {}", e))?;
 
-    if result.rows_affected() == 0 {
+    if rows_affected == 0 {
         return Err("Credit card settings not found".to_string());
     }
 
@@ -247,55 +234,54 @@ pub async fn delete_credit_card_settings(
 
 // ======================== QUERIES ========================
 
-async fn get_credit_card_settings_by_id(
-    pool: State<'_, SqlitePool>,
+fn get_credit_card_settings_by_id_internal(
+    conn: &rusqlite::Connection,
     settings_id: i64,
 ) -> Result<CreditCardSettings, String> {
-    let row = sqlx::query(
+    let mut stmt = conn.prepare(
         r#"
         SELECT id, account_id, credit_limit, statement_day, payment_due_day,
                minimum_payment_percentage, auto_settlement_enabled,
                settlement_account_id, created_at, updated_at
         FROM credit_card_settings
-        WHERE id = ?
+        WHERE id = ?1
         "#,
-    )
-    .bind(settings_id)
-    .fetch_optional(pool.inner())
-    .await
-    .map_err(|e| format!("Database error: {}", e))?
-    .ok_or_else(|| "Credit card settings not found".to_string())?;
+    ).map_err(|e| format!("Database error: {}", e))?;
 
-    Ok(row_to_settings(&row))
+    stmt.query_row(params![settings_id], |row| Ok(row_to_settings(row)))
+        .map_err(|_| "Credit card settings not found".to_string())
 }
 
 #[tauri::command]
-pub async fn get_credit_card_settings_by_account(
-    pool: State<'_, SqlitePool>,
+pub fn get_credit_card_settings_by_account(
+    state: State<'_, AppState>,
     account_id: i64,
 ) -> Result<Option<CreditCardSettings>, String> {
-    let row = sqlx::query(
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let mut stmt = conn.prepare(
         r#"
         SELECT id, account_id, credit_limit, statement_day, payment_due_day,
                minimum_payment_percentage, auto_settlement_enabled,
                settlement_account_id, created_at, updated_at
         FROM credit_card_settings
-        WHERE account_id = ?
+        WHERE account_id = ?1
         "#,
-    )
-    .bind(account_id)
-    .fetch_optional(pool.inner())
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
+    ).map_err(|e| format!("Database error: {}", e))?;
 
-    Ok(row.map(|r| row_to_settings(&r)))
+    let result = stmt.query_row(params![account_id], |row| Ok(row_to_settings(row))).optional().map_err(|e| format!("Database error: {}", e))?;
+    Ok(result)
 }
 
 #[tauri::command]
-pub async fn get_all_credit_cards(
-    pool: State<'_, SqlitePool>,
+pub fn get_all_credit_cards(
+    state: State<'_, AppState>,
 ) -> Result<Vec<CreditCardWithDetails>, String> {
-    let rows = sqlx::query(
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let mut stmt = conn.prepare(
         r#"
         SELECT ccs.id, ccs.account_id, ccs.credit_limit, ccs.statement_day,
                ccs.payment_due_day, ccs.minimum_payment_percentage,
@@ -308,19 +294,20 @@ pub async fn get_all_credit_cards(
         LEFT JOIN accounts sa ON ccs.settlement_account_id = sa.id
         ORDER BY a.name
         "#,
-    )
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch credit cards: {}", e))?;
+    ).map_err(|e| format!("Database error: {}", e))?;
+
+    let cards_data: Vec<(CreditCardSettings, String, Option<String>)> = stmt.query_map([], |row| {
+        Ok((
+            row_to_settings(row),
+            row.get(10)?,
+            row.get(11)?,
+        ))
+    }).unwrap().filter_map(Result::ok).collect();
 
     let mut results = Vec::new();
 
-    for row in rows.iter() {
-        let settings = row_to_settings(row);
-        let account_name: String = row.get("account_name");
-        let settlement_account_name: Option<String> = row.get("settlement_account_name");
-
-        let balances = calculate_card_balances(pool.inner(), &settings).await?;
+    for (settings, account_name, settlement_account_name) in cards_data {
+        let balances = calculate_card_balances(&conn, &settings)?;
 
         results.push(CreditCardWithDetails {
             account_name,
@@ -339,11 +326,14 @@ pub async fn get_all_credit_cards(
 }
 
 #[tauri::command]
-pub async fn get_credit_card_details(
-    pool: State<'_, SqlitePool>,
+pub fn get_credit_card_details(
+    state: State<'_, AppState>,
     settings_id: i64,
 ) -> Result<CreditCardWithDetails, String> {
-    let row = sqlx::query(
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let mut stmt = conn.prepare(
         r#"
         SELECT ccs.id, ccs.account_id, ccs.credit_limit, ccs.statement_day,
                ccs.payment_due_day, ccs.minimum_payment_percentage,
@@ -354,20 +344,19 @@ pub async fn get_credit_card_details(
         FROM credit_card_settings ccs
         JOIN accounts a ON ccs.account_id = a.id
         LEFT JOIN accounts sa ON ccs.settlement_account_id = sa.id
-        WHERE ccs.id = ?
+        WHERE ccs.id = ?1
         "#,
-    )
-    .bind(settings_id)
-    .fetch_optional(pool.inner())
-    .await
-    .map_err(|e| format!("Database error: {}", e))?
-    .ok_or_else(|| "Credit card not found".to_string())?;
+    ).map_err(|e| format!("Database error: {}", e))?;
 
-    let settings = row_to_settings(&row);
-    let account_name: String = row.get("account_name");
-    let settlement_account_name: Option<String> = row.get("settlement_account_name");
+    let (settings, account_name, settlement_account_name) = stmt.query_row(params![settings_id], |row| {
+        Ok((
+            row_to_settings(row),
+            row.get::<_, String>(10)?,
+            row.get::<_, Option<String>>(11)?,
+        ))
+    }).map_err(|_| "Credit card not found".to_string())?;
 
-    let balances = calculate_card_balances(pool.inner(), &settings).await?;
+    let balances = calculate_card_balances(&conn, &settings)?;
 
     Ok(CreditCardWithDetails {
         account_name,
@@ -384,13 +373,15 @@ pub async fn get_credit_card_details(
 
 // ======================== BILLING CYCLE ========================
 
-/// Get the current billing cycle date range for a credit card
 #[tauri::command]
-pub async fn get_current_billing_cycle(
-    pool: State<'_, SqlitePool>,
+pub fn get_current_billing_cycle(
+    state: State<'_, AppState>,
     settings_id: i64,
 ) -> Result<BillingCycleInfo, String> {
-    let settings = get_credit_card_settings_by_id(pool.clone(), settings_id).await?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let settings = get_credit_card_settings_by_id_internal(&conn, settings_id)?;
     let today = Local::now().date_naive();
     let (cycle_start, cycle_end) = compute_current_cycle_dates(today, settings.statement_day);
     let due_date = compute_due_date(cycle_end, settings.payment_due_day);
@@ -403,7 +394,6 @@ pub async fn get_current_billing_cycle(
     })
 }
 
-/// Extra response struct for billing cycle info
 #[derive(Debug, serde::Serialize)]
 pub struct BillingCycleInfo {
     pub cycle_start_date: String,
@@ -412,234 +402,236 @@ pub struct BillingCycleInfo {
     pub days_remaining: i64,
 }
 
-/// Get transactions within the current billing cycle
 #[tauri::command]
-pub async fn get_current_cycle_transactions(
-    pool: State<'_, SqlitePool>,
+pub fn get_current_cycle_transactions(
+    state: State<'_, AppState>,
     settings_id: i64,
 ) -> Result<Vec<StatementTransaction>, String> {
-    let settings = get_credit_card_settings_by_id(pool.clone(), settings_id).await?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let settings = get_credit_card_settings_by_id_internal(&conn, settings_id)?;
     let today = Local::now().date_naive();
     let (cycle_start, cycle_end) = compute_current_cycle_dates(today, settings.statement_day);
 
-    let rows = sqlx::query(
+    let mut stmt = conn.prepare(
         r#"
         SELECT t.id, t.date, t.type, t.amount, c.name as category_name, t.memo
         FROM transactions t
         LEFT JOIN categories c ON t.category_id = c.id
-        WHERE (t.account_id = ? OR t.to_account_id = ?)
-          AND t.date >= ? AND t.date <= ?
+        WHERE (t.account_id = ?1 OR t.to_account_id = ?2)
+          AND t.date >= ?3 AND t.date <= ?4
         ORDER BY t.date DESC, t.id DESC
         "#,
-    )
-    .bind(settings.account_id)
-    .bind(settings.account_id)
-    .bind(cycle_start.format("%Y-%m-%d").to_string())
-    .bind(cycle_end.format("%Y-%m-%d").to_string())
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch cycle transactions: {}", e))?;
+    ).map_err(|e| format!("Query error: {}", e))?;
 
-    Ok(rows
-        .iter()
-        .map(|row| StatementTransaction {
-            id: row.get("id"),
-            date: row.get("date"),
-            transaction_type: row.get("type"),
-            amount: row.get("amount"),
-            category_name: row.get("category_name"),
-            memo: row.get("memo"),
-        })
-        .collect())
+    let transactions = stmt.query_map(
+        params![
+            settings.account_id,
+            settings.account_id,
+            cycle_start.format("%Y-%m-%d").to_string(),
+            cycle_end.format("%Y-%m-%d").to_string()
+        ],
+        |row| {
+            Ok(StatementTransaction {
+                id: row.get(0)?,
+                date: row.get(1)?,
+                transaction_type: row.get(2)?,
+                amount: row.get(3)?,
+                category_name: row.get(4)?,
+                memo: row.get(5)?,
+            })
+        }
+    ).unwrap().filter_map(Result::ok).collect();
+
+    Ok(transactions)
 }
 
 // ======================== STATEMENTS ========================
 
-/// Close the current billing cycle and generate a statement
 #[tauri::command]
-pub async fn generate_statement(
-    pool: State<'_, SqlitePool>,
+pub fn generate_statement(
+    state: State<'_, AppState>,
     settings_id: i64,
 ) -> Result<CreditCardStatement, String> {
-    let settings = get_credit_card_settings_by_id(pool.clone(), settings_id).await?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let settings = get_credit_card_settings_by_id_internal(&conn, settings_id)?;
     let today = Local::now().date_naive();
     let (cycle_start, cycle_end) = compute_current_cycle_dates(today, settings.statement_day);
 
-    // Check if statement already exists for this cycle
-    let existing = sqlx::query(
+    // Check if statement already exists
+    let existing: bool = conn.query_row(
         r#"
-        SELECT id FROM credit_card_statements
-        WHERE credit_card_id = ? AND cycle_start_date = ? AND cycle_end_date = ?
+        SELECT COUNT(id) FROM credit_card_statements
+        WHERE credit_card_id = ?1 AND cycle_start_date = ?2 AND cycle_end_date = ?3
         "#,
-    )
-    .bind(settings_id)
-    .bind(cycle_start.format("%Y-%m-%d").to_string())
-    .bind(cycle_end.format("%Y-%m-%d").to_string())
-    .fetch_optional(pool.inner())
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
+        params![
+            settings_id,
+            cycle_start.format("%Y-%m-%d").to_string(),
+            cycle_end.format("%Y-%m-%d").to_string()
+        ],
+        |row| row.get::<_, i64>(0),
+    ).unwrap_or(0) > 0;
 
-    if existing.is_some() {
+    if existing {
         return Err("Statement already exists for this billing cycle".to_string());
     }
 
-    // Calculate charges (expenses on this card) during cycle
-    let charges_row = sqlx::query(
+    // Calculate charges
+    let total_charges: f64 = conn.query_row(
         r#"
         SELECT COALESCE(SUM(amount), 0.0) as total
         FROM transactions
-        WHERE account_id = ? AND type = 'EXPENSE'
-          AND date >= ? AND date <= ?
+        WHERE account_id = ?1 AND type = 'EXPENSE'
+          AND date >= ?2 AND date <= ?3
         "#,
-    )
-    .bind(settings.account_id)
-    .bind(cycle_start.format("%Y-%m-%d").to_string())
-    .bind(cycle_end.format("%Y-%m-%d").to_string())
-    .fetch_one(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to calculate charges: {}", e))?;
-    let total_charges: f64 = charges_row.get("total");
+        params![
+            settings.account_id,
+            cycle_start.format("%Y-%m-%d").to_string(),
+            cycle_end.format("%Y-%m-%d").to_string()
+        ],
+        |row| row.get(0),
+    ).unwrap_or(0.0);
 
-    // Calculate payments (transfers TO this card) during cycle
-    let payments_row = sqlx::query(
+    // Calculate payments
+    let total_payments: f64 = conn.query_row(
         r#"
         SELECT COALESCE(SUM(amount), 0.0) as total
         FROM transactions
-        WHERE to_account_id = ? AND type = 'TRANSFER'
-          AND date >= ? AND date <= ?
+        WHERE to_account_id = ?1 AND type = 'TRANSFER'
+          AND date >= ?2 AND date <= ?3
         "#,
-    )
-    .bind(settings.account_id)
-    .bind(cycle_start.format("%Y-%m-%d").to_string())
-    .bind(cycle_end.format("%Y-%m-%d").to_string())
-    .fetch_one(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to calculate payments: {}", e))?;
-    let total_payments: f64 = payments_row.get("total");
+        params![
+            settings.account_id,
+            cycle_start.format("%Y-%m-%d").to_string(),
+            cycle_end.format("%Y-%m-%d").to_string()
+        ],
+        |row| row.get(0),
+    ).unwrap_or(0.0);
 
-    // Get opening balance from previous statement's closing balance, or calculate from account
-    let prev_statement = sqlx::query(
+    // Get opening balance
+    let prev_statement_balance: Option<f64> = conn.query_row(
         r#"
         SELECT closing_balance FROM credit_card_statements
-        WHERE credit_card_id = ?
+        WHERE credit_card_id = ?1
         ORDER BY cycle_end_date DESC
         LIMIT 1
         "#,
-    )
-    .bind(settings_id)
-    .fetch_optional(pool.inner())
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
+        params![settings_id],
+        |row| row.get(0),
+    ).optional().map_err(|e| format!("Database error: {}", e))?.flatten();
 
-    let opening_balance: f64 = match prev_statement {
-        Some(row) => row.get("closing_balance"),
-        None => {
-            // First statement - calculate from all transactions before this cycle
-            calculate_balance_before_date(pool.inner(), settings.account_id, &cycle_start).await?
-        }
+    let opening_balance = match prev_statement_balance {
+        Some(b) => b,
+        None => calculate_balance_before_date(&conn, settings.account_id, &cycle_start)?,
     };
 
-    // closing_balance = opening_balance + charges - payments
-    // For LIABILITY accounts: positive balance = money owed
     let closing_balance = opening_balance + total_charges - total_payments;
     let minimum_payment =
         (closing_balance * settings.minimum_payment_percentage / 100.0 * 100.0).round() / 100.0;
 
     let due_date = compute_due_date(cycle_end, settings.payment_due_day);
 
-    let result = sqlx::query(
+    conn.execute(
         r#"
         INSERT INTO credit_card_statements (
             credit_card_id, statement_date, due_date, cycle_start_date, cycle_end_date,
             opening_balance, total_charges, total_payments, closing_balance, minimum_payment
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
         "#,
-    )
-    .bind(settings_id)
-    .bind(cycle_end.format("%Y-%m-%d").to_string())
-    .bind(due_date.format("%Y-%m-%d").to_string())
-    .bind(cycle_start.format("%Y-%m-%d").to_string())
-    .bind(cycle_end.format("%Y-%m-%d").to_string())
-    .bind(opening_balance)
-    .bind(total_charges)
-    .bind(total_payments)
-    .bind(closing_balance)
-    .bind(minimum_payment.max(0.0))
-    .execute(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to create statement: {}", e))?;
+        params![
+            settings_id,
+            cycle_end.format("%Y-%m-%d").to_string(),
+            due_date.format("%Y-%m-%d").to_string(),
+            cycle_start.format("%Y-%m-%d").to_string(),
+            cycle_end.format("%Y-%m-%d").to_string(),
+            opening_balance,
+            total_charges,
+            total_payments,
+            closing_balance,
+            minimum_payment.max(0.0)
+        ],
+    ).map_err(|e| format!("Failed to create statement: {}", e))?;
 
-    let statement_id = result.last_insert_rowid();
-    get_statement_by_id(pool.inner(), statement_id).await
+    let statement_id = conn.last_insert_rowid();
+    get_statement_by_id(&conn, statement_id)
 }
 
 #[tauri::command]
-pub async fn get_statements(
-    pool: State<'_, SqlitePool>,
+pub fn get_statements(
+    state: State<'_, AppState>,
     settings_id: i64,
 ) -> Result<Vec<CreditCardStatement>, String> {
-    let rows = sqlx::query(
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let mut stmt = conn.prepare(
         r#"
         SELECT id, credit_card_id, statement_date, due_date, cycle_start_date,
                cycle_end_date, opening_balance, total_charges, total_payments,
                closing_balance, minimum_payment, status, paid_amount, paid_date, created_at
         FROM credit_card_statements
-        WHERE credit_card_id = ?
+        WHERE credit_card_id = ?1
         ORDER BY cycle_end_date DESC
         "#,
-    )
-    .bind(settings_id)
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch statements: {}", e))?;
+    ).map_err(|e| format!("Database error: {}", e))?;
 
-    Ok(rows.iter().map(|row| row_to_statement(row)).collect())
+    let statements = stmt.query_map(params![settings_id], |row| Ok(row_to_statement(row)))
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+
+    Ok(statements)
 }
 
 #[tauri::command]
-pub async fn get_statement_with_transactions(
-    pool: State<'_, SqlitePool>,
+pub fn get_statement_with_transactions(
+    state: State<'_, AppState>,
     statement_id: i64,
 ) -> Result<StatementWithTransactions, String> {
-    let statement = get_statement_by_id(pool.inner(), statement_id).await?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let statement = get_statement_by_id(&conn, statement_id)?;
 
     // Get the account_id for this credit card
-    let cc_row = sqlx::query("SELECT account_id FROM credit_card_settings WHERE id = ?")
-        .bind(statement.credit_card_id)
-        .fetch_one(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?;
-    let account_id: i64 = cc_row.get("account_id");
+    let account_id: i64 = conn.query_row(
+        "SELECT account_id FROM credit_card_settings WHERE id = ?1",
+        params![statement.credit_card_id],
+        |row| row.get(0),
+    ).map_err(|e| format!("Database error: {}", e))?;
 
-    let rows = sqlx::query(
+    let mut stmt = conn.prepare(
         r#"
         SELECT t.id, t.date, t.type, t.amount, c.name as category_name, t.memo
         FROM transactions t
         LEFT JOIN categories c ON t.category_id = c.id
-        WHERE (t.account_id = ? OR t.to_account_id = ?)
-          AND t.date >= ? AND t.date <= ?
+        WHERE (t.account_id = ?1 OR t.to_account_id = ?2)
+          AND t.date >= ?3 AND t.date <= ?4
         ORDER BY t.date ASC, t.id ASC
         "#,
-    )
-    .bind(account_id)
-    .bind(account_id)
-    .bind(&statement.cycle_start_date)
-    .bind(&statement.cycle_end_date)
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch statement transactions: {}", e))?;
+    ).map_err(|e| format!("Query error: {}", e))?;
 
-    let transactions = rows
-        .iter()
-        .map(|row| StatementTransaction {
-            id: row.get("id"),
-            date: row.get("date"),
-            transaction_type: row.get("type"),
-            amount: row.get("amount"),
-            category_name: row.get("category_name"),
-            memo: row.get("memo"),
-        })
-        .collect();
+    let transactions = stmt.query_map(
+        params![
+            account_id,
+            account_id,
+            statement.cycle_start_date,
+            statement.cycle_end_date
+        ],
+        |row| {
+            Ok(StatementTransaction {
+                id: row.get(0)?,
+                date: row.get(1)?,
+                transaction_type: row.get(2)?,
+                amount: row.get(3)?,
+                category_name: row.get(4)?,
+                memo: row.get(5)?,
+            })
+        }
+    ).unwrap().filter_map(Result::ok).collect();
 
     Ok(StatementWithTransactions {
         statement,
@@ -649,41 +641,39 @@ pub async fn get_statement_with_transactions(
 
 // ======================== SETTLEMENT / PAYMENT ========================
 
-/// Generate a payment (Transfer) transaction from bank to credit card
 #[tauri::command]
-pub async fn settle_credit_card(
-    pool: State<'_, SqlitePool>,
+pub fn settle_credit_card(
+    state: State<'_, AppState>,
     input: SettlementInput,
 ) -> Result<i64, String> {
-    let settings =
-        get_credit_card_settings_by_id(pool.clone(), input.credit_card_settings_id).await?;
+    let pool = crate::get_db(&state)?;
+    let mut conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let settings = get_credit_card_settings_by_id_internal(&conn, input.credit_card_settings_id)?;
 
     // Validate payment account
-    let payment_account_row = sqlx::query(
+    let payment_type: Option<String> = conn.query_row(
         r#"
-        SELECT a.id, ag.type 
+        SELECT ag.type 
         FROM accounts a 
         JOIN account_groups ag ON a.group_id = ag.id 
-        WHERE a.id = ?
+        WHERE a.id = ?1
         "#,
-    )
-    .bind(input.payment_account_id)
-    .fetch_optional(pool.inner())
-    .await
-    .map_err(|e| format!("Database error: {}", e))?
-    .ok_or_else(|| "Payment account not found".to_string())?;
+        params![input.payment_account_id],
+        |row| row.get(0),
+    ).optional().map_err(|e| format!("Database error: {}", e))?.flatten();
 
-    let payment_type: String = payment_account_row.get("type");
-    if payment_type != "ASSET" {
-        return Err("Payment must come from an ASSET account (Bank/Cash/Savings)".to_string());
+    match payment_type {
+        Some(t) if t == "ASSET" => {}
+        Some(_) => return Err("Payment must come from an ASSET account (Bank/Cash/Savings)".to_string()),
+        None => return Err("Payment account not found".to_string()),
     }
 
     if input.payment_account_id == settings.account_id {
         return Err("Cannot pay credit card from itself".to_string());
     }
 
-    // Determine payment amount
-    let balances = calculate_card_balances(pool.inner(), &settings).await?;
+    let balances = calculate_card_balances(&conn, &settings)?;
 
     let payment_amount = match input.amount {
         Some(amt) => {
@@ -693,7 +683,6 @@ pub async fn settle_credit_card(
             amt
         }
         None => {
-            // Full balance payment
             if balances.total_balance <= 0.0 {
                 return Err("No outstanding balance to pay".to_string());
             }
@@ -705,65 +694,45 @@ pub async fn settle_credit_card(
         .date
         .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
 
-    // Create a TRANSFER transaction: from payment_account → to credit_card
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| format!("Transaction error: {}", e))?;
+    let tx = conn.transaction().map_err(|e| format!("Transaction error: {}", e))?;
 
     let memo = format!("Credit card payment - {}", settings.account_id);
 
-    let result = sqlx::query(
+    tx.execute(
         r#"
         INSERT INTO transactions (date, type, amount, account_id, to_account_id, memo)
-        VALUES (?, 'TRANSFER', ?, ?, ?, ?)
+        VALUES (?1, 'TRANSFER', ?2, ?3, ?4, ?5)
         "#,
-    )
-    .bind(&date)
-    .bind(payment_amount)
-    .bind(input.payment_account_id) // from bank
-    .bind(settings.account_id) // to credit card
-    .bind(&memo)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("Failed to create payment transaction: {}", e))?;
+        params![
+            date,
+            payment_amount,
+            input.payment_account_id,
+            settings.account_id,
+            memo
+        ],
+    ).map_err(|e| format!("Failed to create payment transaction: {}", e))?;
 
-    let transaction_id = result.last_insert_rowid();
+    let transaction_id = tx.last_insert_rowid();
 
-    // Journal: Credit the payment account (decrease asset)
-    sqlx::query(
-        "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?, ?, 0, ?)",
-    )
-    .bind(transaction_id)
-    .bind(input.payment_account_id)
-    .bind(payment_amount)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("Failed to create journal entry: {}", e))?;
+    tx.execute(
+        "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?1, ?2, 0, ?3)",
+        params![transaction_id, input.payment_account_id, payment_amount],
+    ).map_err(|e| format!("Failed to create journal entry: {}", e))?;
 
-    // Journal: Debit the credit card account (decrease liability)
-    sqlx::query(
-        "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?, ?, ?, 0)",
-    )
-    .bind(transaction_id)
-    .bind(settings.account_id)
-    .bind(payment_amount)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("Failed to create journal entry: {}", e))?;
+    tx.execute(
+        "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?1, ?2, ?3, 0)",
+        params![transaction_id, settings.account_id, payment_amount],
+    ).map_err(|e| format!("Failed to create journal entry: {}", e))?;
 
-    tx.commit()
-        .await
-        .map_err(|e| format!("Failed to commit: {}", e))?;
+    tx.commit().map_err(|e| format!("Failed to commit: {}", e))?;
 
-    // Update any OPEN/CLOSED statements that match - mark as PAID/PARTIAL
+    // Update statements after committing transaction
     update_statement_payment_status(
-        pool.inner(),
+        &pool.lock().unwrap(),
         input.credit_card_settings_id,
         payment_amount,
         &date,
-    )
-    .await?;
+    )?;
 
     Ok(transaction_id)
 }
@@ -771,10 +740,13 @@ pub async fn settle_credit_card(
 // ======================== DASHBOARD SUMMARY ========================
 
 #[tauri::command]
-pub async fn get_credit_card_summaries(
-    pool: State<'_, SqlitePool>,
+pub fn get_credit_card_summaries(
+    state: State<'_, AppState>,
 ) -> Result<Vec<CreditCardSummary>, String> {
-    let rows = sqlx::query(
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let mut stmt = conn.prepare(
         r#"
         SELECT ccs.id, ccs.account_id, ccs.credit_limit, ccs.statement_day,
                ccs.payment_due_day, ccs.minimum_payment_percentage,
@@ -785,38 +757,34 @@ pub async fn get_credit_card_summaries(
         JOIN accounts a ON ccs.account_id = a.id
         ORDER BY a.name
         "#,
-    )
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch credit card summaries: {}", e))?;
+    ).map_err(|e| format!("Database error: {}", e))?;
+
+    let cards_data: Vec<(CreditCardSettings, String)> = stmt.query_map([], |row| {
+        Ok((
+            row_to_settings(row),
+            row.get(10)?,
+        ))
+    }).unwrap().filter_map(Result::ok).collect();
 
     let mut summaries = Vec::new();
 
-    for row in rows.iter() {
-        let settings = row_to_settings(row);
-        let account_name: String = row.get("account_name");
-        let balances = calculate_card_balances(pool.inner(), &settings).await?;
+    for (settings, account_name) in cards_data {
+        let balances = calculate_card_balances(&conn, &settings)?;
 
-        // Find next due date from open statements
-        let next_due_row = sqlx::query(
+        let next_due_row: Option<(String, f64)> = conn.query_row(
             r#"
             SELECT due_date, closing_balance - paid_amount as remaining
             FROM credit_card_statements
-            WHERE credit_card_id = ? AND status IN ('OPEN', 'CLOSED', 'PARTIAL')
+            WHERE credit_card_id = ?1 AND status IN ('OPEN', 'CLOSED', 'PARTIAL')
             ORDER BY due_date ASC
             LIMIT 1
             "#,
-        )
-        .bind(settings.id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?;
+            params![settings.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional().unwrap_or(None);
 
         let (next_due_date, next_due_amount) = match next_due_row {
-            Some(r) => (
-                Some(r.get::<String, _>("due_date")),
-                Some(r.get::<f64, _>("remaining")),
-            ),
+            Some((d, a)) => (Some(d), Some(a)),
             None => (None, None),
         };
 
@@ -837,87 +805,89 @@ pub async fn get_credit_card_summaries(
 
 // ======================== PROCESS AUTO-SETTLEMENTS ========================
 
-/// Called on app startup or periodically to auto-settle cards with auto_settlement_enabled
 #[tauri::command]
-pub async fn process_auto_settlements(pool: State<'_, SqlitePool>) -> Result<Vec<i64>, String> {
-    let today = Local::now().date_naive();
-
-    let rows = sqlx::query(
-        r#"
-        SELECT id, account_id, payment_due_day, settlement_account_id
-        FROM credit_card_settings
-        WHERE auto_settlement_enabled = 1 AND settlement_account_id IS NOT NULL
-        "#,
-    )
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch auto-settlement cards: {}", e))?;
-
-    let mut settled_ids = Vec::new();
-
-    for row in rows.iter() {
-        let settings_id: i64 = row.get("id");
-        let payment_due_day: i32 = row.get("payment_due_day");
-        let settlement_account_id: i64 = row.get("settlement_account_id");
-
-        // Only settle on the payment due day
-        if today.day() as i32 != payment_due_day {
-            continue;
-        }
-
-        // Check if already settled today
-        let already_settled = sqlx::query(
+pub fn process_auto_settlements(state: State<'_, AppState>) -> Result<Vec<i64>, String> {
+    let pool = crate::get_db(&state)?;
+    // We only need a short lock for queries since we use state.clone() in settle_credit_card
+    let cards_to_settle: Vec<(i64, i64, i64)> = {
+        let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+        let today = Local::now().date_naive();
+        let mut stmt = conn.prepare(
             r#"
-            SELECT id FROM transactions
-            WHERE type = 'TRANSFER'
-              AND to_account_id = (SELECT account_id FROM credit_card_settings WHERE id = ?)
-              AND account_id = ?
-              AND date = ?
-              AND memo LIKE 'Auto-settlement%'
+            SELECT id, payment_due_day, settlement_account_id
+            FROM credit_card_settings
+            WHERE auto_settlement_enabled = 1 AND settlement_account_id IS NOT NULL
             "#,
-        )
-        .bind(settings_id)
-        .bind(settlement_account_id)
-        .bind(today.format("%Y-%m-%d").to_string())
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?;
+        ).unwrap();
+        
+        let mut to_process = Vec::new();
+        
+        for row_res in stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i32>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        }).unwrap() {
+            if let Ok((settings_id, payment_due_day, settlement_account_id)) = row_res {
+                if today.day() as i32 != payment_due_day {
+                    continue;
+                }
 
-        if already_settled.is_some() {
-            continue;
-        }
+                let already_settled: bool = conn.query_row(
+                    r#"
+                    SELECT COUNT(id) FROM transactions
+                    WHERE type = 'TRANSFER'
+                      AND to_account_id = (SELECT account_id FROM credit_card_settings WHERE id = ?1)
+                      AND account_id = ?2
+                      AND date = ?3
+                      AND memo LIKE 'Auto-settlement%'
+                    "#,
+                    params![settings_id, settlement_account_id, today.format("%Y-%m-%d").to_string()],
+                    |row| row.get::<_, i64>(0),
+                ).unwrap_or(0) > 0;
 
-        // Get the latest unpaid statement
-        let statement_row = sqlx::query(
-            r#"
-            SELECT closing_balance - paid_amount as remaining
-            FROM credit_card_statements
-            WHERE credit_card_id = ? AND status IN ('OPEN', 'CLOSED')
-            ORDER BY due_date ASC
-            LIMIT 1
-            "#,
-        )
-        .bind(settings_id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?;
+                if already_settled {
+                    continue;
+                }
 
-        if let Some(stmt_row) = statement_row {
-            let remaining: f64 = stmt_row.get("remaining");
-            if remaining > 0.0 {
-                let input = SettlementInput {
-                    credit_card_settings_id: settings_id,
-                    payment_account_id: settlement_account_id,
-                    amount: Some(remaining),
-                    date: Some(today.format("%Y-%m-%d").to_string()),
-                };
+                let remaining: Option<f64> = conn.query_row(
+                    r#"
+                    SELECT closing_balance - paid_amount as remaining
+                    FROM credit_card_statements
+                    WHERE credit_card_id = ?1 AND status IN ('OPEN', 'CLOSED')
+                    ORDER BY due_date ASC
+                    LIMIT 1
+                    "#,
+                    params![settings_id],
+                    |row| row.get(0),
+                ).optional().unwrap_or(None).flatten();
 
-                match settle_credit_card(pool.clone(), input).await {
-                    Ok(tx_id) => settled_ids.push(tx_id),
-                    Err(e) => {
-                        log::warn!("Auto-settlement failed for card {}: {}", settings_id, e);
+                if let Some(amt) = remaining {
+                    if amt > 0.0 {
+                        to_process.push((settings_id, settlement_account_id, (amt * 100.0) as i64));
                     }
                 }
+            }
+        }
+        to_process
+    };
+
+    let mut settled_ids = Vec::new();
+    let today = Local::now().date_naive();
+
+    for (settings_id, settlement_account_id, amt_cents) in cards_to_settle {
+        let input = SettlementInput {
+            credit_card_settings_id: settings_id,
+            payment_account_id: settlement_account_id,
+            amount: Some((amt_cents as f64) / 100.0),
+            date: Some(today.format("%Y-%m-%d").to_string()),
+        };
+
+        match settle_credit_card(state.clone(), input) {
+            Ok(tx_id) => settled_ids.push(tx_id),
+            Err(e) => {
+                log::warn!("Auto-settlement failed for card {}: {}", settings_id, e);
             }
         }
     }
@@ -927,62 +897,58 @@ pub async fn process_auto_settlements(pool: State<'_, SqlitePool>) -> Result<Vec
 
 // ======================== HELPER FUNCTIONS ========================
 
-fn row_to_settings(row: &sqlx::sqlite::SqliteRow) -> CreditCardSettings {
-    let auto_settlement_int: i32 = row.get("auto_settlement_enabled");
+fn row_to_settings(row: &rusqlite::Row) -> CreditCardSettings {
+    let auto_settlement_int: i32 = row.get(6).unwrap_or(0);
     CreditCardSettings {
-        id: row.get("id"),
-        account_id: row.get("account_id"),
-        credit_limit: row.get("credit_limit"),
-        statement_day: row.get("statement_day"),
-        payment_due_day: row.get("payment_due_day"),
-        minimum_payment_percentage: row.get("minimum_payment_percentage"),
+        id: row.get(0).unwrap_or_default(),
+        account_id: row.get(1).unwrap_or_default(),
+        credit_limit: row.get(2).unwrap_or_default(),
+        statement_day: row.get(3).unwrap_or_default(),
+        payment_due_day: row.get(4).unwrap_or_default(),
+        minimum_payment_percentage: row.get(5).unwrap_or_default(),
         auto_settlement_enabled: auto_settlement_int != 0,
-        settlement_account_id: row.get("settlement_account_id"),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
+        settlement_account_id: row.get(7).unwrap_or_default(),
+        created_at: row.get(8).unwrap_or_default(),
+        updated_at: row.get(9).unwrap_or_default(),
     }
 }
 
-fn row_to_statement(row: &sqlx::sqlite::SqliteRow) -> CreditCardStatement {
+fn row_to_statement(row: &rusqlite::Row) -> CreditCardStatement {
     CreditCardStatement {
-        id: row.get("id"),
-        credit_card_id: row.get("credit_card_id"),
-        statement_date: row.get("statement_date"),
-        due_date: row.get("due_date"),
-        cycle_start_date: row.get("cycle_start_date"),
-        cycle_end_date: row.get("cycle_end_date"),
-        opening_balance: row.get("opening_balance"),
-        total_charges: row.get("total_charges"),
-        total_payments: row.get("total_payments"),
-        closing_balance: row.get("closing_balance"),
-        minimum_payment: row.get("minimum_payment"),
-        status: row.get("status"),
-        paid_amount: row.get("paid_amount"),
-        paid_date: row.get("paid_date"),
-        created_at: row.get("created_at"),
+        id: row.get(0).unwrap_or_default(),
+        credit_card_id: row.get(1).unwrap_or_default(),
+        statement_date: row.get(2).unwrap_or_default(),
+        due_date: row.get(3).unwrap_or_default(),
+        cycle_start_date: row.get(4).unwrap_or_default(),
+        cycle_end_date: row.get(5).unwrap_or_default(),
+        opening_balance: row.get(6).unwrap_or_default(),
+        total_charges: row.get(7).unwrap_or_default(),
+        total_payments: row.get(8).unwrap_or_default(),
+        closing_balance: row.get(9).unwrap_or_default(),
+        minimum_payment: row.get(10).unwrap_or_default(),
+        status: row.get(11).unwrap_or_default(),
+        paid_amount: row.get(12).unwrap_or_default(),
+        paid_date: row.get(13).unwrap_or_default(),
+        created_at: row.get(14).unwrap_or_default(),
     }
 }
 
-async fn get_statement_by_id(
-    pool: &SqlitePool,
+fn get_statement_by_id(
+    conn: &rusqlite::Connection,
     statement_id: i64,
 ) -> Result<CreditCardStatement, String> {
-    let row = sqlx::query(
+    let mut stmt = conn.prepare(
         r#"
         SELECT id, credit_card_id, statement_date, due_date, cycle_start_date,
                cycle_end_date, opening_balance, total_charges, total_payments,
                closing_balance, minimum_payment, status, paid_amount, paid_date, created_at
         FROM credit_card_statements
-        WHERE id = ?
+        WHERE id = ?1
         "#,
-    )
-    .bind(statement_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| format!("Database error: {}", e))?
-    .ok_or_else(|| "Statement not found".to_string())?;
+    ).map_err(|e| format!("Database error: {}", e))?;
 
-    Ok(row_to_statement(&row))
+    stmt.query_row(params![statement_id], |row| Ok(row_to_statement(row)))
+        .map_err(|_| "Statement not found".to_string())
 }
 
 struct CardBalances {
@@ -994,73 +960,52 @@ struct CardBalances {
     utilization_percentage: f64,
 }
 
-/// Calculate all balance figures for a credit card.
-///
-/// For LIABILITY accounts, the journal balance is negative when money is owed.
-/// total_balance = -(initial_balance + journal_balance) → positive number = amount owed
-async fn calculate_card_balances(
-    pool: &SqlitePool,
+fn calculate_card_balances(
+    conn: &rusqlite::Connection,
     settings: &CreditCardSettings,
 ) -> Result<CardBalances, String> {
-    // Get account initial balance
-    let account_row = sqlx::query("SELECT initial_balance FROM accounts WHERE id = ?")
-        .bind(settings.account_id)
-        .fetch_one(pool)
-        .await
-        .map_err(|e| format!("Database error: {}", e))?;
-    let initial_balance: f64 = account_row.get("initial_balance");
+    let initial_balance: f64 = conn.query_row(
+        "SELECT initial_balance FROM accounts WHERE id = ?1",
+        params![settings.account_id],
+        |row| row.get(0),
+    ).map_err(|e| format!("Database error: {}", e))?;
 
-    // Get journal balance (debits - credits)
-    let balance_row = sqlx::query(
+    let journal_balance: f64 = conn.query_row(
         r#"
         SELECT CAST(COALESCE(SUM(debit), 0) - COALESCE(SUM(credit), 0) AS REAL) as balance
-        FROM journal_entries WHERE account_id = ?
+        FROM journal_entries WHERE account_id = ?1
         "#,
-    )
-    .bind(settings.account_id)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| format!("Failed to calculate balance: {}", e))?;
-    let journal_balance: f64 = balance_row.get("balance");
+        params![settings.account_id],
+        |row| row.get(0),
+    ).unwrap_or(0.0);
 
-    // For LIABILITY: balance goes more negative as debt increases
-    // total_balance (positive) = amount owed = -(initial_balance + journal_balance)
     let raw_balance = initial_balance + journal_balance;
-    let total_balance = -raw_balance; // Flip sign so positive = owed
+    let total_balance = -raw_balance;
 
-    // Current cycle calculations
     let today = Local::now().date_naive();
     let (cycle_start, _cycle_end) = compute_current_cycle_dates(today, settings.statement_day);
 
-    let charges_row = sqlx::query(
+    let current_cycle_charges: f64 = conn.query_row(
         r#"
         SELECT COALESCE(SUM(amount), 0.0) as total
         FROM transactions
-        WHERE account_id = ? AND type = 'EXPENSE'
-          AND date >= ?
+        WHERE account_id = ?1 AND type = 'EXPENSE'
+          AND date >= ?2
         "#,
-    )
-    .bind(settings.account_id)
-    .bind(cycle_start.format("%Y-%m-%d").to_string())
-    .fetch_one(pool)
-    .await
-    .map_err(|e| format!("Failed to calculate cycle charges: {}", e))?;
-    let current_cycle_charges: f64 = charges_row.get("total");
+        params![settings.account_id, cycle_start.format("%Y-%m-%d").to_string()],
+        |row| row.get(0),
+    ).unwrap_or(0.0);
 
-    let payments_row = sqlx::query(
+    let current_cycle_payments: f64 = conn.query_row(
         r#"
         SELECT COALESCE(SUM(amount), 0.0) as total
         FROM transactions
-        WHERE to_account_id = ? AND type = 'TRANSFER'
-          AND date >= ?
+        WHERE to_account_id = ?1 AND type = 'TRANSFER'
+          AND date >= ?2
         "#,
-    )
-    .bind(settings.account_id)
-    .bind(cycle_start.format("%Y-%m-%d").to_string())
-    .fetch_one(pool)
-    .await
-    .map_err(|e| format!("Failed to calculate cycle payments: {}", e))?;
-    let current_cycle_payments: f64 = payments_row.get("total");
+        params![settings.account_id, cycle_start.format("%Y-%m-%d").to_string()],
+        |row| row.get(0),
+    ).unwrap_or(0.0);
 
     let outstanding_balance = current_cycle_charges - current_cycle_payments;
     let available_credit = if settings.credit_limit > 0.0 {
@@ -1084,51 +1029,38 @@ async fn calculate_card_balances(
     })
 }
 
-/// Calculate the total balance for a card before a given date (for opening balance of first statement)
-async fn calculate_balance_before_date(
-    pool: &SqlitePool,
+fn calculate_balance_before_date(
+    conn: &rusqlite::Connection,
     account_id: i64,
     before_date: &NaiveDate,
 ) -> Result<f64, String> {
-    // Expenses on card before date
-    let charges_row = sqlx::query(
+    let charges: f64 = conn.query_row(
         r#"
         SELECT COALESCE(SUM(amount), 0.0) as total
         FROM transactions
-        WHERE account_id = ? AND type = 'EXPENSE' AND date < ?
+        WHERE account_id = ?1 AND type = 'EXPENSE' AND date < ?2
         "#,
-    )
-    .bind(account_id)
-    .bind(before_date.format("%Y-%m-%d").to_string())
-    .fetch_one(pool)
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
-    let charges: f64 = charges_row.get("total");
+        params![account_id, before_date.format("%Y-%m-%d").to_string()],
+        |row| row.get(0),
+    ).unwrap_or(0.0);
 
-    // Payments to card before date
-    let payments_row = sqlx::query(
+    let payments: f64 = conn.query_row(
         r#"
         SELECT COALESCE(SUM(amount), 0.0) as total
         FROM transactions
-        WHERE to_account_id = ? AND type = 'TRANSFER' AND date < ?
+        WHERE to_account_id = ?1 AND type = 'TRANSFER' AND date < ?2
         "#,
-    )
-    .bind(account_id)
-    .bind(before_date.format("%Y-%m-%d").to_string())
-    .fetch_one(pool)
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
-    let payments: f64 = payments_row.get("total");
+        params![account_id, before_date.format("%Y-%m-%d").to_string()],
+        |row| row.get(0),
+    ).unwrap_or(0.0);
 
     Ok((charges - payments).max(0.0))
 }
 
-/// Compute the current billing cycle start and end dates
 fn compute_current_cycle_dates(today: NaiveDate, statement_day: i32) -> (NaiveDate, NaiveDate) {
     let current_day = today.day() as i32;
 
     if current_day <= statement_day {
-        // We're before statement day → cycle started last month
         let cycle_end = make_date(today.year(), today.month(), statement_day);
         let prev_month = if today.month() == 1 {
             NaiveDate::from_ymd_opt(today.year() - 1, 12, statement_day as u32)
@@ -1140,7 +1072,6 @@ fn compute_current_cycle_dates(today: NaiveDate, statement_day: i32) -> (NaiveDa
             .unwrap_or(today);
         (cycle_start, cycle_end)
     } else {
-        // We're after statement day → cycle started this month
         let cycle_start =
             make_date(today.year(), today.month(), statement_day) + chrono::Duration::days(1);
         let next_month = if today.month() == 12 {
@@ -1153,9 +1084,7 @@ fn compute_current_cycle_dates(today: NaiveDate, statement_day: i32) -> (NaiveDa
     }
 }
 
-/// Compute payment due date based on statement end date and payment_due_day
 fn compute_due_date(statement_date: NaiveDate, payment_due_day: i32) -> NaiveDate {
-    // Due date is always in the month AFTER the statement date
     let next_month = if statement_date.month() == 12 {
         NaiveDate::from_ymd_opt(statement_date.year() + 1, 1, payment_due_day as u32)
     } else {
@@ -1175,37 +1104,32 @@ fn make_date(year: i32, month: u32, day: i32) -> NaiveDate {
     })
 }
 
-/// After a payment, update statement statuses
-async fn update_statement_payment_status(
-    pool: &SqlitePool,
+fn update_statement_payment_status(
+    conn: &rusqlite::Connection,
     settings_id: i64,
     payment_amount: f64,
     paid_date: &str,
 ) -> Result<(), String> {
-    // Get open/closed statements ordered by due date (pay oldest first)
-    let statements = sqlx::query(
+    let mut stmt = conn.prepare(
         r#"
         SELECT id, closing_balance, paid_amount
         FROM credit_card_statements
-        WHERE credit_card_id = ? AND status IN ('OPEN', 'CLOSED', 'PARTIAL')
+        WHERE credit_card_id = ?1 AND status IN ('OPEN', 'CLOSED', 'PARTIAL')
         ORDER BY due_date ASC
         "#,
-    )
-    .bind(settings_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
+    ).map_err(|e| format!("Database error: {}", e))?;
+
+    let statements: Vec<(i64, f64, f64)> = stmt.query_map(params![settings_id], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    }).unwrap().filter_map(Result::ok).collect();
 
     let mut remaining_payment = payment_amount;
 
-    for stmt in statements.iter() {
+    for (stmt_id, closing_balance, already_paid) in statements {
         if remaining_payment <= 0.0 {
             break;
         }
 
-        let stmt_id: i64 = stmt.get("id");
-        let closing_balance: f64 = stmt.get("closing_balance");
-        let already_paid: f64 = stmt.get("paid_amount");
         let stmt_remaining = closing_balance - already_paid;
 
         if stmt_remaining <= 0.0 {
@@ -1222,20 +1146,14 @@ async fn update_statement_payment_status(
             "PARTIAL"
         };
 
-        sqlx::query(
+        conn.execute(
             r#"
             UPDATE credit_card_statements
-            SET paid_amount = ?, status = ?, paid_date = ?
-            WHERE id = ?
+            SET paid_amount = ?1, status = ?2, paid_date = ?3
+            WHERE id = ?4
             "#,
-        )
-        .bind(new_paid)
-        .bind(new_status)
-        .bind(paid_date)
-        .bind(stmt_id)
-        .execute(pool)
-        .await
-        .map_err(|e| format!("Failed to update statement status: {}", e))?;
+            params![new_paid, new_status, paid_date, stmt_id],
+        ).map_err(|e| format!("Failed to update statement status: {}", e))?;
     }
 
     Ok(())

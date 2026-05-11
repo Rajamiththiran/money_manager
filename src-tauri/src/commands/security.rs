@@ -71,17 +71,55 @@ pub fn set_master_password(
     let key = db::encryption::derive_key(&password, &salt)?;
     let verify_hash = db::encryption::create_verify_hash(&password)?;
 
+    // Drop the current active database connection so Windows doesn't block the file rename
+    {
+        let mut db_guard = state.db.lock().map_err(|_| "Lock poisoned".to_string())?;
+        *db_guard = None;
+    }
+
     // Encrypt the database
     let encrypted_path = state.db_path.with_extension("db.encrypted");
-    db::encrypt_database(&state.db_path, &encrypted_path, &key)
-        .map_err(|e| format!("Failed to encrypt database: {}", e))?;
+    if let Err(e) = db::encrypt_database(&state.db_path, &encrypted_path, &key) {
+        // Try to recover the unencrypted connection
+        if let Ok(pool) = db::init_database_unencrypted(&state.db_path) {
+            if let Ok(mut db_guard) = state.db.lock() {
+                *db_guard = Some(pool);
+            }
+        }
+        return Err(format!("Failed to encrypt database: {}", e));
+    }
 
     // Swap files: rename encrypted to original
     let backup_path = state.db_path.with_extension("db.unencrypted_backup");
-    std::fs::rename(&state.db_path, &backup_path)
-        .map_err(|e| format!("Failed to backup original database: {}", e))?;
-    std::fs::rename(&encrypted_path, &state.db_path)
-        .map_err(|e| format!("Failed to replace database: {}", e))?;
+    
+    // Remove old backup if it exists
+    if backup_path.exists() {
+        let _ = std::fs::remove_file(&backup_path);
+    }
+
+    if let Err(e) = std::fs::rename(&state.db_path, &backup_path) {
+        // Try to recover the unencrypted connection
+        if let Ok(pool) = db::init_database_unencrypted(&state.db_path) {
+            if let Ok(mut db_guard) = state.db.lock() {
+                *db_guard = Some(pool);
+            }
+        }
+        return Err(format!("Failed to backup original database: {}", e));
+    }
+
+    if let Err(e) = std::fs::rename(&encrypted_path, &state.db_path) {
+        // If this fails, the original DB is at backup_path, and encrypted DB is at encrypted_path.
+        // We should try to revert the backup rename to not leave the user in a broken state.
+        let _ = std::fs::rename(&backup_path, &state.db_path);
+        
+        // Try to recover the unencrypted connection
+        if let Ok(pool) = db::init_database_unencrypted(&state.db_path) {
+            if let Ok(mut db_guard) = state.db.lock() {
+                *db_guard = Some(pool);
+            }
+        }
+        return Err(format!("Failed to replace database: {}", e));
+    }
 
     // Save encryption config
     let config = db::encryption::EncryptionConfig {

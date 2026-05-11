@@ -1,13 +1,17 @@
 // File: src-tauri/src/commands/tags.rs
 use crate::models::tag::*;
-use sqlx::{Row, SqlitePool};
+use crate::AppState;
+use rusqlite::params;
 use tauri::State;
 
 #[tauri::command]
-pub async fn create_tag(
-    pool: State<'_, SqlitePool>,
+pub fn create_tag(
+    state: State<'_, AppState>,
     input: CreateTagInput,
 ) -> Result<Tag, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     let name = input.name.trim().to_string();
     if name.is_empty() {
         return Err("Tag name cannot be empty".to_string());
@@ -15,13 +19,10 @@ pub async fn create_tag(
 
     let color = input.color.unwrap_or_else(|| "#6B7280".to_string());
 
-    let result = sqlx::query(
-        "INSERT INTO tags (name, color) VALUES (?, ?)",
+    conn.execute(
+        "INSERT INTO tags (name, color) VALUES (?1, ?2)",
+        params![name, color],
     )
-    .bind(&name)
-    .bind(&color)
-    .execute(pool.inner())
-    .await
     .map_err(|e| {
         if e.to_string().contains("UNIQUE") {
             format!("Tag '{}' already exists", name)
@@ -30,58 +31,56 @@ pub async fn create_tag(
         }
     })?;
 
-    let tag_id = result.last_insert_rowid();
+    let tag_id = conn.last_insert_rowid();
 
-    let row = sqlx::query(
-        "SELECT id, name, color, created_at FROM tags WHERE id = ?",
-    )
-    .bind(tag_id)
-    .fetch_one(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch created tag: {}", e))?;
-
-    Ok(Tag {
-        id: row.get("id"),
-        name: row.get("name"),
-        color: row.get("color"),
-        created_at: row.get("created_at"),
-    })
-}
-
-#[tauri::command]
-pub async fn get_tags(
-    pool: State<'_, SqlitePool>,
-) -> Result<Vec<Tag>, String> {
-    let rows = sqlx::query(
-        "SELECT id, name, color, created_at FROM tags ORDER BY name ASC",
-    )
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch tags: {}", e))?;
-
-    Ok(rows
-        .iter()
-        .map(|row| Tag {
-            id: row.get("id"),
-            name: row.get("name"),
-            color: row.get("color"),
-            created_at: row.get("created_at"),
+    let mut stmt = conn.prepare("SELECT id, name, color, created_at FROM tags WHERE id = ?1").unwrap();
+    
+    stmt.query_row(params![tag_id], |row| {
+        Ok(Tag {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            color: row.get(2)?,
+            created_at: row.get(3)?,
         })
-        .collect())
+    }).map_err(|e| format!("Failed to fetch created tag: {}", e))
 }
 
 #[tauri::command]
-pub async fn update_tag(
-    pool: State<'_, SqlitePool>,
+pub fn get_tags(
+    state: State<'_, AppState>,
+) -> Result<Vec<Tag>, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let mut stmt = conn.prepare("SELECT id, name, color, created_at FROM tags ORDER BY name ASC")
+        .map_err(|e| format!("Database error: {}", e))?;
+
+    let tags: Vec<Tag> = stmt.query_map([], |row| {
+        Ok(Tag {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            color: row.get(2)?,
+            created_at: row.get(3)?,
+        })
+    }).unwrap().filter_map(Result::ok).collect();
+
+    Ok(tags)
+}
+
+#[tauri::command]
+pub fn update_tag(
+    state: State<'_, AppState>,
     input: UpdateTagInput,
 ) -> Result<Tag, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     // Verify exists
-    let exists = sqlx::query("SELECT id FROM tags WHERE id = ?")
-        .bind(input.id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?
-        .is_some();
+    let exists: bool = conn.query_row(
+        "SELECT COUNT(id) FROM tags WHERE id = ?1",
+        params![input.id],
+        |row| row.get::<_, i64>(0),
+    ).unwrap_or(0) > 0;
 
     if !exists {
         return Err("Tag not found".to_string());
@@ -97,7 +96,7 @@ pub async fn update_tag(
         updates.push(format!("name = '{}'", trimmed.replace('\'', "''")));
     }
     if let Some(color) = &input.color {
-        updates.push(format!("color = '{}'", color));
+        updates.push(format!("color = '{}'", color.replace('\'', "''")));
     }
 
     if updates.is_empty() {
@@ -110,9 +109,7 @@ pub async fn update_tag(
         input.id
     );
 
-    sqlx::query(&query)
-        .execute(pool.inner())
-        .await
+    conn.execute(&query, [])
         .map_err(|e| {
             if e.to_string().contains("UNIQUE") {
                 "A tag with that name already exists".to_string()
@@ -121,46 +118,45 @@ pub async fn update_tag(
             }
         })?;
 
-    let row = sqlx::query(
-        "SELECT id, name, color, created_at FROM tags WHERE id = ?",
-    )
-    .bind(input.id)
-    .fetch_one(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch updated tag: {}", e))?;
-
-    Ok(Tag {
-        id: row.get("id"),
-        name: row.get("name"),
-        color: row.get("color"),
-        created_at: row.get("created_at"),
-    })
+    let mut stmt = conn.prepare("SELECT id, name, color, created_at FROM tags WHERE id = ?1").unwrap();
+    
+    stmt.query_row(params![input.id], |row| {
+        Ok(Tag {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            color: row.get(2)?,
+            created_at: row.get(3)?,
+        })
+    }).map_err(|e| format!("Failed to fetch updated tag: {}", e))
 }
 
 #[tauri::command]
-pub async fn delete_tag(
-    pool: State<'_, SqlitePool>,
+pub fn delete_tag(
+    state: State<'_, AppState>,
     tag_id: i64,
 ) -> Result<(), String> {
-    let result = sqlx::query("DELETE FROM tags WHERE id = ?")
-        .bind(tag_id)
-        .execute(pool.inner())
-        .await
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let rows_affected = conn.execute("DELETE FROM tags WHERE id = ?1", params![tag_id])
         .map_err(|e| format!("Failed to delete tag: {}", e))?;
 
-    if result.rows_affected() == 0 {
+    if rows_affected == 0 {
         return Err("Tag not found".to_string());
     }
     Ok(())
 }
 
 #[tauri::command]
-pub async fn get_spending_by_tag(
-    pool: State<'_, SqlitePool>,
+pub fn get_spending_by_tag(
+    state: State<'_, AppState>,
     start_date: String,
     end_date: String,
 ) -> Result<Vec<TagSpending>, String> {
-    let rows = sqlx::query(
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let mut stmt = conn.prepare(
         "SELECT
             tg.id as tag_id,
             tg.name as tag_name,
@@ -171,25 +167,21 @@ pub async fn get_spending_by_tag(
          FROM tags tg
          INNER JOIN transaction_tags tt ON tg.id = tt.tag_id
          INNER JOIN transactions t ON tt.transaction_id = t.id
-         WHERE t.date >= ? AND t.date <= ?
+         WHERE t.date >= ?1 AND t.date <= ?2
          GROUP BY tg.id
          ORDER BY total_expense DESC",
-    )
-    .bind(&start_date)
-    .bind(&end_date)
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to get spending by tag: {}", e))?;
+    ).map_err(|e| format!("Database error: {}", e))?;
 
-    Ok(rows
-        .iter()
-        .map(|row| TagSpending {
-            tag_id: row.get("tag_id"),
-            tag_name: row.get("tag_name"),
-            tag_color: row.get("tag_color"),
-            total_income: row.get("total_income"),
-            total_expense: row.get("total_expense"),
-            transaction_count: row.get("transaction_count"),
+    let spending: Vec<TagSpending> = stmt.query_map(params![start_date, end_date], |row| {
+        Ok(TagSpending {
+            tag_id: row.get(0)?,
+            tag_name: row.get(1)?,
+            tag_color: row.get(2)?,
+            total_income: row.get(3)?,
+            total_expense: row.get(4)?,
+            transaction_count: row.get(5)?,
         })
-        .collect())
+    }).unwrap().filter_map(Result::ok).collect();
+
+    Ok(spending)
 }

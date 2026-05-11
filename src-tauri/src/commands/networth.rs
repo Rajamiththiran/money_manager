@@ -1,62 +1,73 @@
 // File: src-tauri/src/commands/networth.rs
 use crate::models::networth::{NetWorthSnapshot, NetWorthSummary};
+use crate::AppState;
 use chrono::{Datelike, Local, NaiveDate};
-use sqlx::{Row, SqlitePool};
+use rusqlite::params;
 use tauri::State;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-/// Calculate assets & liabilities from live account balances up to a given date.
-/// If `as_of_date` is None, calculates current (all-time) balances.
-async fn calc_net_worth_at(
-    pool: &SqlitePool,
+fn calc_net_worth_at(
+    conn: &rusqlite::Connection,
     as_of_date: Option<&str>,
 ) -> Result<(f64, f64), String> {
-    let rows = match as_of_date {
-        Some(date) => {
-            sqlx::query(
-                r#"
-                SELECT a.initial_balance, ag.type as account_type,
-                       CAST(COALESCE(
-                           (SELECT SUM(je2.debit) - SUM(je2.credit)
-                            FROM journal_entries je2
-                            JOIN transactions t2 ON je2.transaction_id = t2.id
-                            WHERE je2.account_id = a.id AND t2.date <= ?),
-                       0) AS REAL) as journal_balance
-                FROM accounts a
-                JOIN account_groups ag ON a.group_id = ag.id
-                GROUP BY a.id
-                "#,
-            )
-            .bind(date)
-            .fetch_all(pool)
-            .await
-        }
-        None => {
-            sqlx::query(
-                r#"
-                SELECT a.initial_balance, ag.type as account_type,
-                       CAST(COALESCE(SUM(je.debit), 0) - COALESCE(SUM(je.credit), 0) AS REAL) as journal_balance
-                FROM accounts a
-                JOIN account_groups ag ON a.group_id = ag.id
-                LEFT JOIN journal_entries je ON je.account_id = a.id
-                GROUP BY a.id
-                "#,
-            )
-            .fetch_all(pool)
-            .await
-        }
-    }
-    .map_err(|e| format!("Failed to calculate net worth: {}", e))?;
+    let mut stmt = if let Some(_date) = as_of_date {
+        conn.prepare(
+            r#"
+            SELECT a.initial_balance, ag.type as account_type,
+                   CAST(COALESCE(
+                       (SELECT SUM(je2.debit) - SUM(je2.credit)
+                        FROM journal_entries je2
+                        JOIN transactions t2 ON je2.transaction_id = t2.id
+                        WHERE je2.account_id = a.id AND t2.date <= ?1),
+                   0) AS REAL) as journal_balance
+            FROM accounts a
+            JOIN account_groups ag ON a.group_id = ag.id
+            GROUP BY a.id
+            "#,
+        ).map_err(|e| format!("Prepare error: {}", e))?
+    } else {
+        conn.prepare(
+            r#"
+            SELECT a.initial_balance, ag.type as account_type,
+                   CAST(COALESCE(SUM(je.debit), 0) - COALESCE(SUM(je.credit), 0) AS REAL) as journal_balance
+            FROM accounts a
+            JOIN account_groups ag ON a.group_id = ag.id
+            LEFT JOIN journal_entries je ON je.account_id = a.id
+            GROUP BY a.id
+            "#,
+        ).map_err(|e| format!("Prepare error: {}", e))?
+    };
+
+    let rows = if let Some(date) = as_of_date {
+        stmt.query_map(params![date], |row| {
+            Ok((
+                row.get::<_, f64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+            ))
+        })
+        .map_err(|e| format!("Execute error: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Read error: {}", e))?
+    } else {
+        stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, f64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+            ))
+        })
+        .map_err(|e| format!("Execute error: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Read error: {}", e))?
+    };
 
     let mut assets = 0.0_f64;
     let mut liabilities = 0.0_f64;
 
-    for row in rows.iter() {
-        let initial: f64 = row.get("initial_balance");
-        let journal: f64 = row.get("journal_balance");
+    for (initial, acc_type, journal) in rows {
         let balance = initial + journal;
-        let acc_type: String = row.get("account_type");
         match acc_type.as_str() {
             "ASSET" => assets += balance,
             "LIABILITY" => liabilities += (-balance).max(0.0),
@@ -70,7 +81,6 @@ async fn calc_net_worth_at(
     ))
 }
 
-/// Return the last day of a given year/month.
 fn last_day_of_month(year: i32, month: u32) -> NaiveDate {
     if month == 12 {
         NaiveDate::from_ymd_opt(year + 1, 1, 1)
@@ -83,10 +93,12 @@ fn last_day_of_month(year: i32, month: u32) -> NaiveDate {
 
 // ── Commands ─────────────────────────────────────────────────────────
 
-/// Live net worth with month-over-month change.
 #[tauri::command]
-pub async fn get_current_net_worth(pool: State<'_, SqlitePool>) -> Result<NetWorthSummary, String> {
-    let (assets, liabilities) = calc_net_worth_at(pool.inner(), None).await?;
+pub fn get_current_net_worth(state: State<'_, AppState>) -> Result<NetWorthSummary, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let (assets, liabilities) = calc_net_worth_at(&conn, None)?;
     let net_worth = assets - liabilities;
 
     // Previous month-end for comparison
@@ -96,8 +108,7 @@ pub async fn get_current_net_worth(pool: State<'_, SqlitePool>) -> Result<NetWor
     let prev_month_end = first_of_month.pred_opt().ok_or("Invalid date")?;
     let prev_date_str = prev_month_end.format("%Y-%m-%d").to_string();
 
-    let (prev_assets, prev_liabilities) =
-        calc_net_worth_at(pool.inner(), Some(&prev_date_str)).await?;
+    let (prev_assets, prev_liabilities) = calc_net_worth_at(&conn, Some(&prev_date_str))?;
     let prev_net_worth = prev_assets - prev_liabilities;
 
     let change_amount = ((net_worth - prev_net_worth) * 100.0).round() / 100.0;
@@ -116,115 +127,104 @@ pub async fn get_current_net_worth(pool: State<'_, SqlitePool>) -> Result<NetWor
     })
 }
 
-/// Return persisted monthly snapshots for the chart.
-/// Falls back to the existing `net_worth_snapshots` table.
 #[tauri::command]
-pub async fn get_net_worth_snapshots(
-    pool: State<'_, SqlitePool>,
+pub fn get_net_worth_snapshots(
+    state: State<'_, AppState>,
     months: Option<i64>,
 ) -> Result<Vec<NetWorthSnapshot>, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     let limit = months.unwrap_or(12);
 
-    let rows = sqlx::query(
-        "SELECT id, snapshot_date, total_assets, total_liabilities, net_worth
-         FROM net_worth_snapshots
-         ORDER BY snapshot_date DESC
-         LIMIT ?",
-    )
-    .bind(limit)
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch snapshots: {}", e))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, snapshot_date, total_assets, total_liabilities, net_worth
+             FROM net_worth_snapshots
+             ORDER BY snapshot_date DESC
+             LIMIT ?1",
+        )
+        .map_err(|e| format!("Query error: {}", e))?;
 
-    let mut snapshots: Vec<NetWorthSnapshot> = rows
-        .iter()
-        .map(|r| NetWorthSnapshot {
-            id: r.get("id"),
-            snapshot_date: r.get("snapshot_date"),
-            total_assets: r.get("total_assets"),
-            total_liabilities: r.get("total_liabilities"),
-            net_worth: r.get("net_worth"),
+    let mut snapshots = stmt
+        .query_map(params![limit], |row| {
+            Ok(NetWorthSnapshot {
+                id: row.get(0)?,
+                snapshot_date: row.get(1)?,
+                total_assets: row.get(2)?,
+                total_liabilities: row.get(3)?,
+                net_worth: row.get(4)?,
+            })
         })
-        .collect();
+        .map_err(|e| format!("Failed to fetch snapshots: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Read error: {}", e))?;
 
     // Return in chronological order (oldest first) for the chart
     snapshots.reverse();
     Ok(snapshots)
 }
 
-/// Create a snapshot for the current month if one doesn't exist yet.
-/// Called from `lib.rs` setup — runs silently on every app start.
-pub async fn generate_net_worth_snapshot(pool: &SqlitePool) -> Result<(), String> {
+pub fn generate_net_worth_snapshot(conn: &rusqlite::Connection) -> Result<(), String> {
     let today = Local::now().date_naive();
     let snapshot_date = last_day_of_month(today.year(), today.month());
     let date_str = snapshot_date.format("%Y-%m-%d").to_string();
 
     // Check if snapshot already exists for this month
-    let exists = sqlx::query("SELECT id FROM net_worth_snapshots WHERE snapshot_date = ?")
-        .bind(&date_str)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| format!("DB error: {}", e))?
-        .is_some();
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM net_worth_snapshots WHERE snapshot_date = ?1",
+            params![date_str],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0) > 0;
+
+    let (assets, liabilities) = calc_net_worth_at(conn, None)?;
+    let net_worth = assets - liabilities;
 
     if exists {
-        // Update existing snapshot with current values
-        let (assets, liabilities) = calc_net_worth_at(pool, None).await?;
-        let net_worth = assets - liabilities;
-
-        sqlx::query(
-            "UPDATE net_worth_snapshots SET total_assets = ?, total_liabilities = ?, net_worth = ? WHERE snapshot_date = ?"
+        conn.execute(
+            "UPDATE net_worth_snapshots SET total_assets = ?1, total_liabilities = ?2, net_worth = ?3 WHERE snapshot_date = ?4",
+            params![assets, liabilities, net_worth, date_str],
         )
-        .bind(assets)
-        .bind(liabilities)
-        .bind(net_worth)
-        .bind(&date_str)
-        .execute(pool)
-        .await
         .map_err(|e| format!("Failed to update snapshot: {}", e))?;
     } else {
-        let (assets, liabilities) = calc_net_worth_at(pool, None).await?;
-        let net_worth = assets - liabilities;
-
-        sqlx::query(
-            "INSERT INTO net_worth_snapshots (snapshot_date, total_assets, total_liabilities, net_worth) VALUES (?, ?, ?, ?)"
+        conn.execute(
+            "INSERT INTO net_worth_snapshots (snapshot_date, total_assets, total_liabilities, net_worth) VALUES (?1, ?2, ?3, ?4)",
+            params![date_str, assets, liabilities, net_worth],
         )
-        .bind(&date_str)
-        .bind(assets)
-        .bind(liabilities)
-        .bind(net_worth)
-        .execute(pool)
-        .await
         .map_err(|e| format!("Failed to insert snapshot: {}", e))?;
     }
 
     Ok(())
 }
 
-/// One-time backfill: replay history from the earliest transaction month to now.
-/// Only runs if the snapshots table is empty.
-pub async fn backfill_net_worth_snapshots(pool: &SqlitePool) -> Result<(), String> {
-    // Check if we already have snapshots
-    let count_row = sqlx::query("SELECT COUNT(*) as cnt FROM net_worth_snapshots")
-        .fetch_one(pool)
-        .await
-        .map_err(|e| format!("DB error: {}", e))?;
-    let count: i64 = count_row.get("cnt");
+pub fn backfill_net_worth_snapshots(conn: &rusqlite::Connection) -> Result<(), String> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM net_worth_snapshots",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
     if count > 0 {
         return Ok(()); // Already populated
     }
 
-    // Find earliest transaction date
-    let earliest = sqlx::query("SELECT MIN(date) as min_date FROM transactions")
-        .fetch_one(pool)
-        .await
-        .map_err(|e| format!("DB error: {}", e))?;
+    let min_date_str: Option<String> = conn
+        .query_row(
+            "SELECT MIN(date) FROM transactions",
+            [],
+            |row| row.get(0),
+        )
+        .ok()
+        .flatten();
 
-    let min_date_str: Option<String> = earliest.get("min_date");
     let start = match min_date_str {
         Some(d) => NaiveDate::parse_from_str(&d, "%Y-%m-%d")
             .map_err(|_| "Failed to parse earliest date".to_string())?,
-        None => return Ok(()), // No transactions, nothing to backfill
+        None => return Ok(()), // No transactions
     };
 
     let today = Local::now().date_naive();
@@ -234,25 +234,19 @@ pub async fn backfill_net_worth_snapshots(pool: &SqlitePool) -> Result<(), Strin
     loop {
         let end_of_month = last_day_of_month(year, month);
         if end_of_month > today {
-            break; // Current month will be handled by generate_net_worth_snapshot
+            break; // Current month handled by generate_net_worth_snapshot
         }
 
         let date_str = end_of_month.format("%Y-%m-%d").to_string();
-        let (assets, liabilities) = calc_net_worth_at(pool, Some(&date_str)).await?;
+        let (assets, liabilities) = calc_net_worth_at(conn, Some(&date_str))?;
         let net_worth = assets - liabilities;
 
-        sqlx::query(
-            "INSERT OR IGNORE INTO net_worth_snapshots (snapshot_date, total_assets, total_liabilities, net_worth) VALUES (?, ?, ?, ?)"
+        conn.execute(
+            "INSERT OR IGNORE INTO net_worth_snapshots (snapshot_date, total_assets, total_liabilities, net_worth) VALUES (?1, ?2, ?3, ?4)",
+            params![date_str, assets, liabilities, net_worth],
         )
-        .bind(&date_str)
-        .bind(assets)
-        .bind(liabilities)
-        .bind(net_worth)
-        .execute(pool)
-        .await
         .map_err(|e| format!("Failed to backfill snapshot: {}", e))?;
 
-        // Next month
         if month == 12 {
             year += 1;
             month = 1;

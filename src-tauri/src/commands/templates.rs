@@ -2,14 +2,18 @@
 use crate::models::template::{
     CreateTemplateInput, TransactionTemplate, TransactionTemplateWithDetails, UpdateTemplateInput,
 };
-use sqlx::{Row, SqlitePool};
+use crate::AppState;
+use rusqlite::{params, OptionalExtension};
 use tauri::State;
 
 #[tauri::command]
-pub async fn get_templates(
-    pool: State<'_, SqlitePool>,
+pub fn get_templates(
+    state: State<'_, AppState>,
 ) -> Result<Vec<TransactionTemplateWithDetails>, String> {
-    let rows = sqlx::query(
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let mut stmt = conn.prepare(
         "SELECT 
             t.id, t.name, t.transaction_type, t.amount, t.account_id, t.to_account_id,
             t.category_id, t.memo, t.use_count, t.last_used_at, t.created_at, t.updated_at,
@@ -21,40 +25,41 @@ pub async fn get_templates(
          LEFT JOIN accounts ta ON t.to_account_id = ta.id
          LEFT JOIN categories c ON t.category_id = c.id
          ORDER BY t.use_count DESC, t.updated_at DESC",
-    )
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch templates: {}", e))?;
+    ).map_err(|e| format!("Database error: {}", e))?;
 
-    Ok(rows
-        .iter()
-        .map(|row| TransactionTemplateWithDetails {
+    let templates: Vec<TransactionTemplateWithDetails> = stmt.query_map([], |row| {
+        Ok(TransactionTemplateWithDetails {
             template: TransactionTemplate {
-                id: row.get("id"),
-                name: row.get("name"),
-                transaction_type: row.get("transaction_type"),
-                amount: row.get("amount"),
-                account_id: row.get("account_id"),
-                to_account_id: row.get("to_account_id"),
-                category_id: row.get("category_id"),
-                memo: row.get("memo"),
-                use_count: row.get("use_count"),
-                last_used_at: row.get("last_used_at"),
-                created_at: row.get("created_at"),
-                updated_at: row.get("updated_at"),
+                id: row.get(0)?,
+                name: row.get(1)?,
+                transaction_type: row.get(2)?,
+                amount: row.get(3)?,
+                account_id: row.get(4)?,
+                to_account_id: row.get(5)?,
+                category_id: row.get(6)?,
+                memo: row.get(7)?,
+                use_count: row.get(8)?,
+                last_used_at: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
             },
-            account_name: row.get("account_name"),
-            to_account_name: row.get("to_account_name"),
-            category_name: row.get("category_name"),
+            account_name: row.get(12)?,
+            to_account_name: row.get(13)?,
+            category_name: row.get(14)?,
         })
-        .collect())
+    }).unwrap().filter_map(Result::ok).collect();
+
+    Ok(templates)
 }
 
 #[tauri::command]
-pub async fn create_template(
-    pool: State<'_, SqlitePool>,
+pub fn create_template(
+    state: State<'_, AppState>,
     input: CreateTemplateInput,
 ) -> Result<TransactionTemplate, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     // Validate transaction type
     if input.transaction_type != "INCOME"
         && input.transaction_type != "EXPENSE"
@@ -75,12 +80,11 @@ pub async fn create_template(
 
     // Validate account exists if provided
     if let Some(account_id) = input.account_id {
-        let exists = sqlx::query("SELECT id FROM accounts WHERE id = ?")
-            .bind(account_id)
-            .fetch_optional(pool.inner())
-            .await
-            .map_err(|e| format!("Database error: {}", e))?
-            .is_some();
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(id) FROM accounts WHERE id = ?1",
+            params![account_id],
+            |row| row.get::<_, i64>(0),
+        ).unwrap_or(0) > 0;
         if !exists {
             return Err("Account not found.".to_string());
         }
@@ -88,12 +92,11 @@ pub async fn create_template(
 
     // Validate to_account exists if provided
     if let Some(to_account_id) = input.to_account_id {
-        let exists = sqlx::query("SELECT id FROM accounts WHERE id = ?")
-            .bind(to_account_id)
-            .fetch_optional(pool.inner())
-            .await
-            .map_err(|e| format!("Database error: {}", e))?
-            .is_some();
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(id) FROM accounts WHERE id = ?1",
+            params![to_account_id],
+            |row| row.get::<_, i64>(0),
+        ).unwrap_or(0) > 0;
         if !exists {
             return Err("Destination account not found.".to_string());
         }
@@ -101,12 +104,11 @@ pub async fn create_template(
 
     // Validate category exists if provided
     if let Some(category_id) = input.category_id {
-        let exists = sqlx::query("SELECT id FROM categories WHERE id = ?")
-            .bind(category_id)
-            .fetch_optional(pool.inner())
-            .await
-            .map_err(|e| format!("Database error: {}", e))?
-            .is_some();
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(id) FROM categories WHERE id = ?1",
+            params![category_id],
+            |row| row.get::<_, i64>(0),
+        ).unwrap_or(0) > 0;
         if !exists {
             return Err("Category not found.".to_string());
         }
@@ -124,61 +126,60 @@ pub async fn create_template(
         }
     }
 
-    let result = sqlx::query(
+    conn.execute(
         "INSERT INTO transaction_templates 
          (name, transaction_type, amount, account_id, to_account_id, category_id, memo)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(input.name.trim())
-    .bind(&input.transaction_type)
-    .bind(input.amount)
-    .bind(input.account_id)
-    .bind(input.to_account_id)
-    .bind(input.category_id)
-    .bind(&input.memo)
-    .execute(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to create template: {}", e))?;
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            input.name.trim(),
+            input.transaction_type,
+            input.amount,
+            input.account_id,
+            input.to_account_id,
+            input.category_id,
+            input.memo
+        ],
+    ).map_err(|e| format!("Failed to create template: {}", e))?;
 
-    let template_id = result.last_insert_rowid();
+    let template_id = conn.last_insert_rowid();
 
-    let row = sqlx::query(
+    let mut stmt = conn.prepare(
         "SELECT id, name, transaction_type, amount, account_id, to_account_id,
                 category_id, memo, use_count, last_used_at, created_at, updated_at
-         FROM transaction_templates WHERE id = ?",
-    )
-    .bind(template_id)
-    .fetch_one(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch created template: {}", e))?;
+         FROM transaction_templates WHERE id = ?1",
+    ).unwrap();
 
-    Ok(TransactionTemplate {
-        id: row.get("id"),
-        name: row.get("name"),
-        transaction_type: row.get("transaction_type"),
-        amount: row.get("amount"),
-        account_id: row.get("account_id"),
-        to_account_id: row.get("to_account_id"),
-        category_id: row.get("category_id"),
-        memo: row.get("memo"),
-        use_count: row.get("use_count"),
-        last_used_at: row.get("last_used_at"),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-    })
+    stmt.query_row(params![template_id], |row| {
+        Ok(TransactionTemplate {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            transaction_type: row.get(2)?,
+            amount: row.get(3)?,
+            account_id: row.get(4)?,
+            to_account_id: row.get(5)?,
+            category_id: row.get(6)?,
+            memo: row.get(7)?,
+            use_count: row.get(8)?,
+            last_used_at: row.get(9)?,
+            created_at: row.get(10)?,
+            updated_at: row.get(11)?,
+        })
+    }).map_err(|e| format!("Failed to fetch created template: {}", e))
 }
 
 #[tauri::command]
-pub async fn update_template(
-    pool: State<'_, SqlitePool>,
+pub fn update_template(
+    state: State<'_, AppState>,
     input: UpdateTemplateInput,
 ) -> Result<(), String> {
-    let exists = sqlx::query("SELECT id FROM transaction_templates WHERE id = ?")
-        .bind(input.id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?
-        .is_some();
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let exists: bool = conn.query_row(
+        "SELECT COUNT(id) FROM transaction_templates WHERE id = ?1",
+        params![input.id],
+        |row| row.get::<_, i64>(0),
+    ).unwrap_or(0) > 0;
 
     if !exists {
         return Err("Template not found.".to_string());
@@ -201,12 +202,11 @@ pub async fn update_template(
     }
 
     if let Some(account_id) = input.account_id {
-        let exists = sqlx::query("SELECT id FROM accounts WHERE id = ?")
-            .bind(account_id)
-            .fetch_optional(pool.inner())
-            .await
-            .map_err(|e| format!("Database error: {}", e))?
-            .is_some();
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(id) FROM accounts WHERE id = ?1",
+            params![account_id],
+            |row| row.get::<_, i64>(0),
+        ).unwrap_or(0) > 0;
         if !exists {
             return Err("Account not found.".to_string());
         }
@@ -214,12 +214,11 @@ pub async fn update_template(
     }
 
     if let Some(to_account_id) = input.to_account_id {
-        let exists = sqlx::query("SELECT id FROM accounts WHERE id = ?")
-            .bind(to_account_id)
-            .fetch_optional(pool.inner())
-            .await
-            .map_err(|e| format!("Database error: {}", e))?
-            .is_some();
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(id) FROM accounts WHERE id = ?1",
+            params![to_account_id],
+            |row| row.get::<_, i64>(0),
+        ).unwrap_or(0) > 0;
         if !exists {
             return Err("Destination account not found.".to_string());
         }
@@ -227,12 +226,11 @@ pub async fn update_template(
     }
 
     if let Some(category_id) = input.category_id {
-        let exists = sqlx::query("SELECT id FROM categories WHERE id = ?")
-            .bind(category_id)
-            .fetch_optional(pool.inner())
-            .await
-            .map_err(|e| format!("Database error: {}", e))?
-            .is_some();
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(id) FROM categories WHERE id = ?1",
+            params![category_id],
+            |row| row.get::<_, i64>(0),
+        ).unwrap_or(0) > 0;
         if !exists {
             return Err("Category not found.".to_string());
         }
@@ -255,23 +253,21 @@ pub async fn update_template(
         input.id
     );
 
-    sqlx::query(&query)
-        .execute(pool.inner())
-        .await
+    conn.execute(&query, [])
         .map_err(|e| format!("Failed to update template: {}", e))?;
 
     Ok(())
 }
 
 #[tauri::command]
-pub async fn delete_template(pool: State<'_, SqlitePool>, template_id: i64) -> Result<(), String> {
-    let result = sqlx::query("DELETE FROM transaction_templates WHERE id = ?")
-        .bind(template_id)
-        .execute(pool.inner())
-        .await
+pub fn delete_template(state: State<'_, AppState>, template_id: i64) -> Result<(), String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let rows_affected = conn.execute("DELETE FROM transaction_templates WHERE id = ?1", params![template_id])
         .map_err(|e| format!("Failed to delete template: {}", e))?;
 
-    if result.rows_affected() == 0 {
+    if rows_affected == 0 {
         return Err("Template not found.".to_string());
     }
 
@@ -279,23 +275,23 @@ pub async fn delete_template(pool: State<'_, SqlitePool>, template_id: i64) -> R
 }
 
 #[tauri::command]
-pub async fn use_template(
-    pool: State<'_, SqlitePool>,
+pub fn use_template(
+    state: State<'_, AppState>,
     template_id: i64,
 ) -> Result<TransactionTemplateWithDetails, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     // Increment use count and update last_used_at
-    sqlx::query(
+    conn.execute(
         "UPDATE transaction_templates 
          SET use_count = use_count + 1, last_used_at = datetime('now'), updated_at = datetime('now')
-         WHERE id = ?",
-    )
-    .bind(template_id)
-    .execute(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to update template usage: {}", e))?;
+         WHERE id = ?1",
+        params![template_id],
+    ).map_err(|e| format!("Failed to update template usage: {}", e))?;
 
     // Return template with details
-    let row = sqlx::query(
+    let mut stmt = conn.prepare(
         "SELECT 
             t.id, t.name, t.transaction_type, t.amount, t.account_id, t.to_account_id,
             t.category_id, t.memo, t.use_count, t.last_used_at, t.created_at, t.updated_at,
@@ -306,31 +302,30 @@ pub async fn use_template(
          LEFT JOIN accounts a ON t.account_id = a.id
          LEFT JOIN accounts ta ON t.to_account_id = ta.id
          LEFT JOIN categories c ON t.category_id = c.id
-         WHERE t.id = ?",
-    )
-    .bind(template_id)
-    .fetch_optional(pool.inner())
-    .await
-    .map_err(|e| format!("Database error: {}", e))?
-    .ok_or_else(|| "Template not found.".to_string())?;
+         WHERE t.id = ?1",
+    ).map_err(|e| format!("Database error: {}", e))?;
 
-    Ok(TransactionTemplateWithDetails {
-        template: TransactionTemplate {
-            id: row.get("id"),
-            name: row.get("name"),
-            transaction_type: row.get("transaction_type"),
-            amount: row.get("amount"),
-            account_id: row.get("account_id"),
-            to_account_id: row.get("to_account_id"),
-            category_id: row.get("category_id"),
-            memo: row.get("memo"),
-            use_count: row.get("use_count"),
-            last_used_at: row.get("last_used_at"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-        },
-        account_name: row.get("account_name"),
-        to_account_name: row.get("to_account_name"),
-        category_name: row.get("category_name"),
-    })
+    let details = stmt.query_row(params![template_id], |row| {
+        Ok(TransactionTemplateWithDetails {
+            template: TransactionTemplate {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                transaction_type: row.get(2)?,
+                amount: row.get(3)?,
+                account_id: row.get(4)?,
+                to_account_id: row.get(5)?,
+                category_id: row.get(6)?,
+                memo: row.get(7)?,
+                use_count: row.get(8)?,
+                last_used_at: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+            },
+            account_name: row.get(12)?,
+            to_account_name: row.get(13)?,
+            category_name: row.get(14)?,
+        })
+    }).optional().map_err(|e| format!("Database error: {}", e))?.ok_or_else(|| "Template not found.".to_string())?;
+
+    Ok(details)
 }

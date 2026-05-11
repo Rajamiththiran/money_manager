@@ -1,0 +1,5 @@
+[build]
+rustflags = ["-L", "native=C:\\Program Files\\OpenSSL-Win64\\lib\\VC\\x64\\MD"]
+
+[env]
+OPENSSL_DIR = "C:\\Program Files\\OpenSSL-Win64"

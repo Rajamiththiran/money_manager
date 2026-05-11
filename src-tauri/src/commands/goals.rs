@@ -1,28 +1,31 @@
 // File: src-tauri/src/commands/goals.rs
 use crate::models::goal::*;
+use crate::AppState;
 use chrono::{Duration, NaiveDate};
-use sqlx::{Row, SqlitePool};
+use rusqlite::params;
 use tauri::State;
 
 // ======================== CRUD ========================
 
 #[tauri::command]
-pub async fn create_goal(
-    pool: State<'_, SqlitePool>,
+pub fn create_goal(
+    state: State<'_, AppState>,
     input: CreateGoalInput,
 ) -> Result<SavingsGoal, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     if input.target_amount <= 0.0 {
         return Err("Target amount must be greater than zero".to_string());
     }
 
     // Validate linked account if provided
     if let Some(account_id) = input.linked_account_id {
-        let exists = sqlx::query("SELECT id FROM accounts WHERE id = ?")
-            .bind(account_id)
-            .fetch_optional(pool.inner())
-            .await
-            .map_err(|e| format!("Database error: {}", e))?
-            .is_some();
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(id) FROM accounts WHERE id = ?1",
+            params![account_id],
+            |row| row.get::<_, i64>(0),
+        ).unwrap_or(0) > 0;
         if !exists {
             return Err("Linked account does not exist".to_string());
         }
@@ -31,70 +34,58 @@ pub async fn create_goal(
     let color = input.color.unwrap_or_else(|| "#6B7280".to_string());
     let icon = input.icon.unwrap_or_else(|| "target".to_string());
 
-    let result = sqlx::query(
+    conn.execute(
         "INSERT INTO savings_goals (name, target_amount, target_date, linked_account_id, color, icon)
-         VALUES (?, ?, ?, ?, ?, ?)",
-    )
-    .bind(&input.name)
-    .bind(input.target_amount)
-    .bind(&input.target_date)
-    .bind(input.linked_account_id)
-    .bind(&color)
-    .bind(&icon)
-    .execute(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to create goal: {}", e))?;
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![input.name, input.target_amount, input.target_date, input.linked_account_id, color, icon],
+    ).map_err(|e| format!("Failed to create goal: {}", e))?;
 
-    let goal_id = result.last_insert_rowid();
-    get_goal_by_id(pool.inner(), goal_id).await
+    let goal_id = conn.last_insert_rowid();
+    get_goal_by_id(&conn, goal_id)
 }
 
 #[tauri::command]
-pub async fn get_goals(
-    pool: State<'_, SqlitePool>,
+pub fn get_goals(
+    state: State<'_, AppState>,
     status_filter: Option<String>,
 ) -> Result<Vec<GoalWithProgress>, String> {
-    let goals = if let Some(status) = &status_filter {
-        sqlx::query(
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let goals: Vec<SavingsGoal> = if let Some(status) = &status_filter {
+        let mut stmt = conn.prepare(
             "SELECT id, name, target_amount, target_date, linked_account_id, color, icon, status, created_at, updated_at
-             FROM savings_goals WHERE status = ? ORDER BY created_at DESC",
-        )
-        .bind(status)
-        .fetch_all(pool.inner())
-        .await
+             FROM savings_goals WHERE status = ?1 ORDER BY created_at DESC",
+        ).unwrap();
+        stmt.query_map(params![status], row_to_goal).unwrap().filter_map(Result::ok).collect()
     } else {
-        sqlx::query(
+        let mut stmt = conn.prepare(
             "SELECT id, name, target_amount, target_date, linked_account_id, color, icon, status, created_at, updated_at
              FROM savings_goals ORDER BY
              CASE status WHEN 'ACTIVE' THEN 1 WHEN 'PAUSED' THEN 2 WHEN 'COMPLETED' THEN 3 WHEN 'ARCHIVED' THEN 4 END,
              created_at DESC",
-        )
-        .fetch_all(pool.inner())
-        .await
-    }
-    .map_err(|e| format!("Failed to fetch goals: {}", e))?;
+        ).unwrap();
+        stmt.query_map([], row_to_goal).unwrap().filter_map(Result::ok).collect()
+    };
 
     let mut results = Vec::new();
-    for row in &goals {
-        let goal = row_to_goal(row);
-        let progress = calculate_progress(pool.inner(), &goal).await?;
+    for goal in goals {
+        let progress = calculate_progress(&conn, &goal)?;
         let (linked_account_name, linked_account_balance) = if let Some(account_id) = goal.linked_account_id {
-            let acc_row = sqlx::query(
+            let mut stmt = conn.prepare(
                 "SELECT a.name, a.initial_balance +
                         COALESCE((SELECT SUM(je.debit - je.credit) FROM journal_entries je
                                   INNER JOIN transactions t ON je.transaction_id = t.id
                                   WHERE je.account_id = a.id), 0.0) as balance
-                 FROM accounts a WHERE a.id = ?",
-            )
-            .bind(account_id)
-            .fetch_optional(pool.inner())
-            .await
-            .ok()
-            .flatten();
-            match acc_row {
-                Some(r) => (Some(r.get::<String, _>("name")), Some(r.get::<f64, _>("balance"))),
-                None => (None, None),
-            }
+                 FROM accounts a WHERE a.id = ?1",
+            ).unwrap();
+            let row = stmt.query_row(params![account_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, f64>(1)?,
+                ))
+            });
+            row.ok().unzip()
         } else {
             (None, None)
         };
@@ -110,21 +101,27 @@ pub async fn get_goals(
 }
 
 #[tauri::command]
-pub async fn get_goal_progress(
-    pool: State<'_, SqlitePool>,
+pub fn get_goal_progress(
+    state: State<'_, AppState>,
     goal_id: i64,
 ) -> Result<GoalProgress, String> {
-    let goal = get_goal_by_id(pool.inner(), goal_id).await?;
-    calculate_progress(pool.inner(), &goal).await
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let goal = get_goal_by_id(&conn, goal_id)?;
+    calculate_progress(&conn, &goal)
 }
 
 #[tauri::command]
-pub async fn update_goal(
-    pool: State<'_, SqlitePool>,
+pub fn update_goal(
+    state: State<'_, AppState>,
     input: UpdateGoalInput,
 ) -> Result<SavingsGoal, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     // Verify goal exists
-    let _goal = get_goal_by_id(pool.inner(), input.id).await?;
+    let _goal = get_goal_by_id(&conn, input.id)?;
 
     let mut updates = Vec::new();
 
@@ -145,10 +142,10 @@ pub async fn update_goal(
         }
     }
     if let Some(color) = &input.color {
-        updates.push(format!("color = '{}'", color));
+        updates.push(format!("color = '{}'", color.replace('\'', "''")));
     }
     if let Some(icon) = &input.icon {
-        updates.push(format!("icon = '{}'", icon));
+        updates.push(format!("icon = '{}'", icon.replace('\'', "''")));
     }
 
     if updates.is_empty() {
@@ -163,26 +160,24 @@ pub async fn update_goal(
         input.id
     );
 
-    sqlx::query(&query)
-        .execute(pool.inner())
-        .await
+    conn.execute(&query, [])
         .map_err(|e| format!("Failed to update goal: {}", e))?;
 
-    get_goal_by_id(pool.inner(), input.id).await
+    get_goal_by_id(&conn, input.id)
 }
 
 #[tauri::command]
-pub async fn delete_goal(
-    pool: State<'_, SqlitePool>,
+pub fn delete_goal(
+    state: State<'_, AppState>,
     goal_id: i64,
 ) -> Result<(), String> {
-    let result = sqlx::query("DELETE FROM savings_goals WHERE id = ?")
-        .bind(goal_id)
-        .execute(pool.inner())
-        .await
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let rows_affected = conn.execute("DELETE FROM savings_goals WHERE id = ?1", params![goal_id])
         .map_err(|e| format!("Failed to delete goal: {}", e))?;
 
-    if result.rows_affected() == 0 {
+    if rows_affected == 0 {
         return Err("Goal not found".to_string());
     }
     Ok(())
@@ -191,140 +186,136 @@ pub async fn delete_goal(
 // ======================== CONTRIBUTIONS ========================
 
 #[tauri::command]
-pub async fn add_goal_contribution(
-    pool: State<'_, SqlitePool>,
+pub fn add_goal_contribution(
+    state: State<'_, AppState>,
     input: AddContributionInput,
 ) -> Result<GoalContribution, String> {
-    let goal = get_goal_by_id(pool.inner(), input.goal_id).await?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let goal = get_goal_by_id(&conn, input.goal_id)?;
 
     if goal.status != "ACTIVE" {
         return Err(format!("Cannot add contributions to a {} goal", goal.status.to_lowercase()));
     }
 
-    let result = sqlx::query(
+    conn.execute(
         "INSERT INTO goal_contributions (goal_id, amount, contribution_date, note)
-         VALUES (?, ?, ?, ?)",
-    )
-    .bind(input.goal_id)
-    .bind(input.amount)
-    .bind(&input.date)
-    .bind(&input.note)
-    .execute(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to add contribution: {}", e))?;
+         VALUES (?1, ?2, ?3, ?4)",
+        params![input.goal_id, input.amount, input.date, input.note],
+    ).map_err(|e| format!("Failed to add contribution: {}", e))?;
 
-    let contribution_id = result.last_insert_rowid();
+    let contribution_id = conn.last_insert_rowid();
 
-    let row = sqlx::query(
+    let mut stmt = conn.prepare(
         "SELECT id, goal_id, amount, contribution_date, note, created_at
-         FROM goal_contributions WHERE id = ?",
-    )
-    .bind(contribution_id)
-    .fetch_one(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch contribution: {}", e))?;
+         FROM goal_contributions WHERE id = ?1",
+    ).unwrap();
 
-    Ok(GoalContribution {
-        id: row.get("id"),
-        goal_id: row.get("goal_id"),
-        amount: row.get("amount"),
-        contribution_date: row.get("contribution_date"),
-        note: row.get("note"),
-        created_at: row.get("created_at"),
-    })
+    stmt.query_row(params![contribution_id], |row| {
+        Ok(GoalContribution {
+            id: row.get(0)?,
+            goal_id: row.get(1)?,
+            amount: row.get(2)?,
+            contribution_date: row.get(3)?,
+            note: row.get(4)?,
+            created_at: row.get(5)?,
+        })
+    }).map_err(|e| format!("Failed to fetch contribution: {}", e))
 }
 
 // ======================== LIFECYCLE ========================
 
 #[tauri::command]
-pub async fn complete_goal(
-    pool: State<'_, SqlitePool>,
+pub fn complete_goal(
+    state: State<'_, AppState>,
     goal_id: i64,
 ) -> Result<(), String> {
-    let goal = get_goal_by_id(pool.inner(), goal_id).await?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let goal = get_goal_by_id(&conn, goal_id)?;
     if goal.status != "ACTIVE" {
         return Err(format!("Only active goals can be completed. Current status: {}", goal.status));
     }
-    update_goal_status(pool.inner(), goal_id, "COMPLETED").await
+    update_goal_status(&conn, goal_id, "COMPLETED")
 }
 
 #[tauri::command]
-pub async fn pause_goal(
-    pool: State<'_, SqlitePool>,
+pub fn pause_goal(
+    state: State<'_, AppState>,
     goal_id: i64,
 ) -> Result<(), String> {
-    let goal = get_goal_by_id(pool.inner(), goal_id).await?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let goal = get_goal_by_id(&conn, goal_id)?;
     if goal.status != "ACTIVE" {
         return Err(format!("Only active goals can be paused. Current status: {}", goal.status));
     }
-    update_goal_status(pool.inner(), goal_id, "PAUSED").await
+    update_goal_status(&conn, goal_id, "PAUSED")
 }
 
 #[tauri::command]
-pub async fn resume_goal(
-    pool: State<'_, SqlitePool>,
+pub fn resume_goal(
+    state: State<'_, AppState>,
     goal_id: i64,
 ) -> Result<(), String> {
-    let goal = get_goal_by_id(pool.inner(), goal_id).await?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let goal = get_goal_by_id(&conn, goal_id)?;
     if goal.status != "PAUSED" {
         return Err(format!("Only paused goals can be resumed. Current status: {}", goal.status));
     }
-    update_goal_status(pool.inner(), goal_id, "ACTIVE").await
+    update_goal_status(&conn, goal_id, "ACTIVE")
 }
 
 #[tauri::command]
-pub async fn archive_goal(
-    pool: State<'_, SqlitePool>,
+pub fn archive_goal(
+    state: State<'_, AppState>,
     goal_id: i64,
 ) -> Result<(), String> {
-    let _goal = get_goal_by_id(pool.inner(), goal_id).await?;
-    update_goal_status(pool.inner(), goal_id, "ARCHIVED").await
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let _goal = get_goal_by_id(&conn, goal_id)?;
+    update_goal_status(&conn, goal_id, "ARCHIVED")
 }
 
 // ======================== HELPERS ========================
 
-fn row_to_goal(row: &sqlx::sqlite::SqliteRow) -> SavingsGoal {
-    SavingsGoal {
-        id: row.get("id"),
-        name: row.get("name"),
-        target_amount: row.get("target_amount"),
-        target_date: row.get("target_date"),
-        linked_account_id: row.get("linked_account_id"),
-        color: row.get("color"),
-        icon: row.get("icon"),
-        status: row.get("status"),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-    }
+fn row_to_goal(row: &rusqlite::Row) -> rusqlite::Result<SavingsGoal> {
+    Ok(SavingsGoal {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        target_amount: row.get(2)?,
+        target_date: row.get(3)?,
+        linked_account_id: row.get(4)?,
+        color: row.get(5)?,
+        icon: row.get(6)?,
+        status: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+    })
 }
 
-async fn get_goal_by_id(pool: &SqlitePool, goal_id: i64) -> Result<SavingsGoal, String> {
-    let row = sqlx::query(
+fn get_goal_by_id(conn: &rusqlite::Connection, goal_id: i64) -> Result<SavingsGoal, String> {
+    let mut stmt = conn.prepare(
         "SELECT id, name, target_amount, target_date, linked_account_id, color, icon, status, created_at, updated_at
-         FROM savings_goals WHERE id = ?",
-    )
-    .bind(goal_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| format!("Database error: {}", e))?
-    .ok_or_else(|| "Goal not found".to_string())?;
-
-    Ok(row_to_goal(&row))
+         FROM savings_goals WHERE id = ?1",
+    ).unwrap();
+    stmt.query_row(params![goal_id], row_to_goal).map_err(|_| "Goal not found".to_string())
 }
 
-async fn calculate_progress(pool: &SqlitePool, goal: &SavingsGoal) -> Result<GoalProgress, String> {
+fn calculate_progress(conn: &rusqlite::Connection, goal: &SavingsGoal) -> Result<GoalProgress, String> {
     let today = chrono::Local::now().naive_local().date();
 
-    // All goals (linked or unlinked) use manual contributions for progress
-    let row = sqlx::query(
-        "SELECT COALESCE(SUM(amount), 0.0) as total FROM goal_contributions WHERE goal_id = ?",
-    )
-    .bind(goal.id)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| format!("Failed to sum contributions: {}", e))?;
-
-    let current_amount: f64 = row.get("total");
+    let current_amount: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(amount), 0.0) as total FROM goal_contributions WHERE goal_id = ?1",
+        params![goal.id],
+        |row| row.get(0),
+    ).unwrap_or(0.0);
 
     let percentage = if goal.target_amount > 0.0 {
         ((current_amount / goal.target_amount) * 100.0).min(100.0).max(0.0)
@@ -383,12 +374,8 @@ async fn calculate_progress(pool: &SqlitePool, goal: &SavingsGoal) -> Result<Goa
     })
 }
 
-async fn update_goal_status(pool: &SqlitePool, goal_id: i64, status: &str) -> Result<(), String> {
-    sqlx::query("UPDATE savings_goals SET status = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(status)
-        .bind(goal_id)
-        .execute(pool)
-        .await
+fn update_goal_status(conn: &rusqlite::Connection, goal_id: i64, status: &str) -> Result<(), String> {
+    conn.execute("UPDATE savings_goals SET status = ?1, updated_at = datetime('now') WHERE id = ?2", params![status, goal_id])
         .map_err(|e| format!("Failed to update goal status: {}", e))?;
     Ok(())
 }

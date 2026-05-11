@@ -1,5 +1,7 @@
 // File: src-tauri/src/commands/settings.rs
-use sqlx::{Row, SqlitePool};
+use crate::AppState;
+use rusqlite::params;
+use serde::Serialize;
 use tauri::State;
 
 // ======================== RESTORE FROM BACKUP ========================
@@ -8,20 +10,22 @@ use tauri::State;
 /// This will DELETE all existing data and replace it with the backup data.
 /// The backup format matches what `export_full_backup` produces.
 #[tauri::command]
-pub async fn restore_from_backup(
-    pool: State<'_, SqlitePool>,
+pub fn restore_from_backup(
+    state: State<'_, AppState>,
     backup_json: String,
 ) -> Result<RestoreResult, String> {
-    restore_from_backup_internal(pool.inner(), &backup_json).await
+    let pool = crate::get_db(&state)?;
+    let mut conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+    restore_from_backup_internal(&mut conn, &backup_json)
 }
 
 /// Internal version without State wrapper — callable from scheduled_backup.rs
-pub async fn restore_from_backup_internal(
-    pool: &SqlitePool,
+pub fn restore_from_backup_internal(
+    conn: &mut rusqlite::Connection,
     backup_json: &str,
 ) -> Result<RestoreResult, String> {
     // 1. Parse and validate backup JSON
-    let backup: serde_json::Value = serde_json::from_str(&backup_json)
+    let backup: serde_json::Value = serde_json::from_str(backup_json)
         .map_err(|e| format!("Invalid backup file format: {}", e))?;
 
     let version = backup
@@ -85,15 +89,12 @@ pub async fn restore_from_backup_internal(
         .unwrap_or(&[]);
 
     // 2. Begin transaction for atomic restore
-    let mut tx = pool
-        .begin()
-        .await
+    let tx = conn
+        .transaction()
         .map_err(|e| format!("Failed to begin transaction: {}", e))?;
 
     // 3. Disable foreign keys temporarily for clean deletion
-    sqlx::query("PRAGMA foreign_keys = OFF")
-        .execute(&mut *tx)
-        .await
+    tx.execute("PRAGMA foreign_keys = OFF", [])
         .map_err(|e| format!("Failed to disable foreign keys: {}", e))?;
 
     // 4. Clear all user data tables (order matters for foreign keys)
@@ -119,34 +120,23 @@ pub async fn restore_from_backup_internal(
 
     for table in &tables_to_clear {
         let query = format!("DELETE FROM {}", table);
-        match sqlx::query(&query).execute(&mut *tx).await {
-            Ok(_) => {}
-            Err(e) => {
-                println!("Warning: Could not clear table {}: {}", table, e);
-            }
-        }
+        let _ = tx.execute(&query, []);
     }
 
     // 5. Reset SQLite autoincrement counters
     for table in &tables_to_clear {
-        let query = format!(
-            "DELETE FROM sqlite_sequence WHERE name = '{}'",
-            table
-        );
-        let _ = sqlx::query(&query).execute(&mut *tx).await;
+        let query = format!("DELETE FROM sqlite_sequence WHERE name = '{}'", table);
+        let _ = tx.execute(&query, []);
     }
 
     // 6. Re-enable foreign keys
-    sqlx::query("PRAGMA foreign_keys = ON")
-        .execute(&mut *tx)
-        .await
+    tx.execute("PRAGMA foreign_keys = ON", [])
         .map_err(|e| format!("Failed to re-enable foreign keys: {}", e))?;
 
     // ============================================================
     // 7. Restore accounts & build old_id → new_id map
     // ============================================================
-    let mut account_id_map: std::collections::HashMap<i64, i64> =
-        std::collections::HashMap::new();
+    let mut account_id_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
     let mut accounts_restored: i64 = 0;
 
     for account in accounts {
@@ -172,36 +162,27 @@ pub async fn restore_from_backup_internal(
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let result = sqlx::query(
-            "INSERT INTO accounts (group_id, name, initial_balance, currency, created_at) VALUES (?, ?, ?, ?, ?)"
+        tx.execute(
+            "INSERT INTO accounts (group_id, name, initial_balance, currency, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![group_id, name, initial_balance, currency, created_at]
         )
-        .bind(group_id)
-        .bind(name)
-        .bind(initial_balance)
-        .bind(currency)
-        .bind(created_at)
-        .execute(&mut *tx)
-        .await
         .map_err(|e| format!("Failed to restore account '{}': {}", name, e))?;
 
-        let new_id = result.last_insert_rowid();
+        let new_id = tx.last_insert_rowid();
         account_id_map.insert(old_id, new_id);
         accounts_restored += 1;
     }
 
     // ============================================================
     // 8. Restore categories & build old_id → new_id map
-    //    Two passes: parents first, then children
     // ============================================================
-    let mut category_id_map: std::collections::HashMap<i64, i64> =
-        std::collections::HashMap::new();
+    let mut category_id_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
     let mut categories_restored: i64 = 0;
 
-    // First pass: parent categories (no parent_id)
+    // First pass: parent categories
     for category in categories {
-        let parent_id = category.get("parent_id").and_then(|v| v.as_i64());
-        if parent_id.is_some() {
-            continue; // Skip children in first pass
+        if category.get("parent_id").and_then(|v| v.as_i64()).is_some() {
+            continue;
         }
 
         let old_id = category.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -214,23 +195,21 @@ pub async fn restore_from_backup_internal(
             .and_then(|v| v.as_str())
             .ok_or_else(|| "Category missing type".to_string())?;
 
-        let result =
-            sqlx::query("INSERT INTO categories (name, type) VALUES (?, ?)")
-                .bind(name)
-                .bind(cat_type)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| format!("Failed to restore category '{}': {}", name, e))?;
+        tx.execute(
+            "INSERT INTO categories (name, type) VALUES (?1, ?2)",
+            params![name, cat_type]
+        )
+        .map_err(|e| format!("Failed to restore category '{}': {}", name, e))?;
 
-        category_id_map.insert(old_id, result.last_insert_rowid());
+        category_id_map.insert(old_id, tx.last_insert_rowid());
         categories_restored += 1;
     }
 
-    // Second pass: child categories (have parent_id)
+    // Second pass: child categories
     for category in categories {
         let old_parent_id = match category.get("parent_id").and_then(|v| v.as_i64()) {
             Some(pid) => pid,
-            None => continue, // Skip parents (already inserted)
+            None => continue,
         };
 
         let old_id = category.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -243,40 +222,21 @@ pub async fn restore_from_backup_internal(
             .and_then(|v| v.as_str())
             .ok_or_else(|| "Category missing type".to_string())?;
 
-        // Map old parent_id to new parent_id
         let new_parent_id = category_id_map
             .get(&old_parent_id)
             .copied()
             .unwrap_or(old_parent_id);
 
-        let result = sqlx::query(
-            "INSERT INTO categories (parent_id, name, type) VALUES (?, ?, ?)",
+        tx.execute(
+            "INSERT INTO categories (parent_id, name, type) VALUES (?1, ?2, ?3)",
+            params![new_parent_id, name, cat_type]
         )
-        .bind(new_parent_id)
-        .bind(name)
-        .bind(cat_type)
-        .execute(&mut *tx)
-        .await
         .map_err(|e| format!("Failed to restore child category '{}': {}", name, e))?;
 
-        category_id_map.insert(old_id, result.last_insert_rowid());
+        category_id_map.insert(old_id, tx.last_insert_rowid());
         categories_restored += 1;
     }
 
-    // ============================================================
-    // 9. Restore transactions and journal entries
-    //
-    //    The export format uses TransactionWithDetails with
-    //    #[serde(flatten)], so transaction fields are at top level.
-    //    We also check for a nested "transaction" key for safety.
-    //
-    //    Journal entries match create_transaction exactly:
-    //      INCOME  → 1 entry: debit account (increase asset)
-    //      EXPENSE → 1 entry: credit account (decrease asset)
-    //      TRANSFER→ 2 entries: credit source, debit destination
-    //
-    //    CRITICAL: journal_entries.account_id references accounts(id).
-    //    Only account IDs go here — NEVER category IDs.
     // ============================================================
     // 8a. Restore tags & build old_id → new_id map
     // ============================================================
@@ -289,15 +249,17 @@ pub async fn restore_from_backup_internal(
         let color = tag.get("color").and_then(|v| v.as_str()).unwrap_or("#6B7280");
         let created_at = tag.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
 
-        let result = sqlx::query("INSERT INTO tags (name, color, created_at) VALUES (?, ?, ?)")
-            .bind(name)
-            .bind(color)
-            .bind(if created_at.is_empty() { chrono::Utc::now().to_rfc3339() } else { created_at.to_string() })
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| format!("Failed to restore tag '{}': {}", name, e))?;
+        tx.execute(
+            "INSERT INTO tags (name, color, created_at) VALUES (?1, ?2, ?3)",
+            params![
+                name,
+                color,
+                if created_at.is_empty() { chrono::Utc::now().to_rfc3339() } else { created_at.to_string() }
+            ]
+        )
+        .map_err(|e| format!("Failed to restore tag '{}': {}", name, e))?;
 
-        tag_id_map.insert(old_id, result.last_insert_rowid());
+        tag_id_map.insert(old_id, tx.last_insert_rowid());
         tags_restored += 1;
     }
 
@@ -321,23 +283,17 @@ pub async fn restore_from_backup_internal(
 
         let new_linked_account_id = old_linked_account_id.and_then(|id| account_id_map.get(&id).copied());
 
-        let result = sqlx::query(
-            "INSERT INTO savings_goals (name, target_amount, target_date, linked_account_id, color, icon, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        tx.execute(
+            "INSERT INTO savings_goals (name, target_amount, target_date, linked_account_id, color, icon, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                name, target_amount, target_date, new_linked_account_id, color, icon, status,
+                if created_at.is_empty() { chrono::Utc::now().to_rfc3339() } else { created_at.to_string() },
+                if updated_at.is_empty() { chrono::Utc::now().to_rfc3339() } else { updated_at.to_string() }
+            ]
         )
-        .bind(name)
-        .bind(target_amount)
-        .bind(target_date)
-        .bind(new_linked_account_id)
-        .bind(color)
-        .bind(icon)
-        .bind(status)
-        .bind(if created_at.is_empty() { chrono::Utc::now().to_rfc3339() } else { created_at.to_string() })
-        .bind(if updated_at.is_empty() { chrono::Utc::now().to_rfc3339() } else { updated_at.to_string() })
-        .execute(&mut *tx)
-        .await
         .map_err(|e| format!("Failed to restore savings goal '{}': {}", name, e))?;
 
-        goal_id_map.insert(old_id, result.last_insert_rowid());
+        goal_id_map.insert(old_id, tx.last_insert_rowid());
         savings_goals_restored += 1;
     }
 
@@ -348,7 +304,6 @@ pub async fn restore_from_backup_internal(
     let mut transactions_restored: i64 = 0;
 
     for txn in transactions {
-        // Handle both flat and nested export format
         let txn_data = txn.get("transaction").unwrap_or(txn);
         let old_id = txn_data.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
 
@@ -373,115 +328,58 @@ pub async fn restore_from_backup_internal(
         let memo = txn_data.get("memo").and_then(|v| v.as_str());
         let photo_path = txn_data.get("photo_path").and_then(|v| v.as_str());
 
-        // Map old IDs to new IDs
-        let new_account_id = account_id_map
-            .get(&old_account_id)
-            .copied()
-            .ok_or_else(|| {
-                format!(
-                    "Account ID {} not found in backup (transaction date: {})",
-                    old_account_id, date
-                )
-            })?;
+        let new_account_id = account_id_map.get(&old_account_id).copied().ok_or_else(|| {
+            format!(
+                "Account ID {} not found in backup (transaction date: {})",
+                old_account_id, date
+            )
+        })?;
 
-        let new_to_account_id = match old_to_account_id {
-            Some(id) => Some(
-                account_id_map
-                    .get(&id)
-                    .copied()
-                    .unwrap_or(id),
-            ),
-            None => None,
-        };
+        let new_to_account_id = old_to_account_id.map(|id| account_id_map.get(&id).copied().unwrap_or(id));
+        let new_category_id = old_category_id.map(|id| category_id_map.get(&id).copied().unwrap_or(id));
 
-        let new_category_id = match old_category_id {
-            Some(id) => Some(
-                category_id_map
-                    .get(&id)
-                    .copied()
-                    .unwrap_or(id),
-            ),
-            None => None,
-        };
-
-        // Insert the transaction
-        let result = sqlx::query(
+        tx.execute(
             r#"INSERT INTO transactions (date, type, amount, account_id, to_account_id, category_id, memo, photo_path)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)"#,
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"#,
+            params![
+                date, txn_type, amount, new_account_id, new_to_account_id, new_category_id, memo, photo_path
+            ]
         )
-        .bind(date)
-        .bind(txn_type)
-        .bind(amount)
-        .bind(new_account_id)
-        .bind(new_to_account_id)
-        .bind(new_category_id)
-        .bind(memo)
-        .bind(photo_path)
-        .execute(&mut *tx)
-        .await
         .map_err(|e| format!("Failed to restore transaction (date: {}): {}", date, e))?;
 
-        let new_txn_id = result.last_insert_rowid();
+        let new_txn_id = tx.last_insert_rowid();
         if old_id > 0 {
             txn_id_map.insert(old_id, new_txn_id);
         }
 
-        // Create journal entries — ONLY using account IDs
         match txn_type {
             "INCOME" => {
-                // Debit the account (increase asset)
-                sqlx::query(
-                    "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?, ?, ?, 0)",
-                )
-                .bind(new_txn_id)
-                .bind(new_account_id)
-                .bind(amount)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| format!("Failed to create journal entry for INCOME txn {}: {}", new_txn_id, e))?;
+                tx.execute(
+                    "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?1, ?2, ?3, 0)",
+                    params![new_txn_id, new_account_id, amount]
+                ).map_err(|e| format!("Failed to create journal entry: {}", e))?;
             }
             "EXPENSE" => {
-                // Credit the account (decrease asset)
-                sqlx::query(
-                    "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?, ?, 0, ?)",
-                )
-                .bind(new_txn_id)
-                .bind(new_account_id)
-                .bind(amount)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| format!("Failed to create journal entry for EXPENSE txn {}: {}", new_txn_id, e))?;
+                tx.execute(
+                    "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?1, ?2, 0, ?3)",
+                    params![new_txn_id, new_account_id, amount]
+                ).map_err(|e| format!("Failed to create journal entry: {}", e))?;
             }
             "TRANSFER" => {
                 if let Some(to_acc_id) = new_to_account_id {
-                    // Credit source account (decrease)
-                    sqlx::query(
-                        "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?, ?, 0, ?)",
-                    )
-                    .bind(new_txn_id)
-                    .bind(new_account_id)
-                    .bind(amount)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| format!("Failed to create journal entry for TRANSFER source txn {}: {}", new_txn_id, e))?;
+                    tx.execute(
+                        "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?1, ?2, 0, ?3)",
+                        params![new_txn_id, new_account_id, amount]
+                    ).map_err(|e| format!("Failed to create journal entry: {}", e))?;
 
-                    // Debit destination account (increase)
-                    sqlx::query(
-                        "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?, ?, ?, 0)",
-                    )
-                    .bind(new_txn_id)
-                    .bind(to_acc_id)
-                    .bind(amount)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| format!("Failed to create journal entry for TRANSFER dest txn {}: {}", new_txn_id, e))?;
+                    tx.execute(
+                        "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?1, ?2, ?3, 0)",
+                        params![new_txn_id, to_acc_id, amount]
+                    ).map_err(|e| format!("Failed to create journal entry: {}", e))?;
                 }
             }
             _ => {
-                println!(
-                    "Warning: Unknown transaction type '{}', skipping journal entries",
-                    txn_type
-                );
+                println!("Warning: Unknown transaction type '{}'", txn_type);
             }
         }
 
@@ -497,11 +395,10 @@ pub async fn restore_from_backup_internal(
         let old_tag_id = tt_entry.get("tag_id").and_then(|v| v.as_i64()).unwrap_or(0);
 
         if let (Some(&new_txn_id), Some(&new_tag_id)) = (txn_id_map.get(&old_txn_id), tag_id_map.get(&old_tag_id)) {
-            let _ = sqlx::query("INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)")
-                .bind(new_txn_id)
-                .bind(new_tag_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = tx.execute(
+                "INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?1, ?2)",
+                params![new_txn_id, new_tag_id]
+            );
             transaction_tags_restored += 1;
         }
     }
@@ -518,14 +415,16 @@ pub async fn restore_from_backup_internal(
         let created_at = contrib_entry.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
 
         if let Some(&new_goal_id) = goal_id_map.get(&old_goal_id) {
-            let _ = sqlx::query("INSERT INTO goal_contributions (goal_id, amount, contribution_date, note, created_at) VALUES (?, ?, ?, ?, ?)")
-                .bind(new_goal_id)
-                .bind(amount)
-                .bind(if contribution_date.is_empty() { chrono::Utc::now().to_rfc3339() } else { contribution_date.to_string() })
-                .bind(note)
-                .bind(if created_at.is_empty() { chrono::Utc::now().to_rfc3339() } else { created_at.to_string() })
-                .execute(&mut *tx)
-                .await;
+            let _ = tx.execute(
+                "INSERT INTO goal_contributions (goal_id, amount, contribution_date, note, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    new_goal_id,
+                    amount,
+                    if contribution_date.is_empty() { chrono::Utc::now().to_rfc3339() } else { contribution_date.to_string() },
+                    note,
+                    if created_at.is_empty() { chrono::Utc::now().to_rfc3339() } else { created_at.to_string() }
+                ]
+            );
             goal_contributions_restored += 1;
         }
     }
@@ -557,15 +456,10 @@ pub async fn restore_from_backup_internal(
             .copied()
             .unwrap_or(old_category_id);
 
-        sqlx::query(
-            "INSERT INTO budgets (category_id, amount, period, start_date) VALUES (?, ?, ?, ?)",
+        tx.execute(
+            "INSERT INTO budgets (category_id, amount, period, start_date) VALUES (?1, ?2, ?3, ?4)",
+            params![new_category_id, amount, period, start_date]
         )
-        .bind(new_category_id)
-        .bind(amount)
-        .bind(period)
-        .bind(start_date)
-        .execute(&mut *tx)
-        .await
         .map_err(|e| format!("Failed to restore budget: {}", e))?;
 
         budgets_restored += 1;
@@ -573,7 +467,6 @@ pub async fn restore_from_backup_internal(
 
     // 11. Commit the transaction
     tx.commit()
-        .await
         .map_err(|e| format!("Failed to commit restore: {}", e))?;
 
     Ok(RestoreResult {
@@ -594,21 +487,20 @@ pub async fn restore_from_backup_internal(
 /// Delete ALL user data from the database.
 /// Keeps the schema and account_groups (seed data) intact.
 #[tauri::command]
-pub async fn clear_all_data(pool: State<'_, SqlitePool>) -> Result<ClearResult, String> {
-    let mut tx = pool
-        .inner()
-        .begin()
-        .await
+pub fn clear_all_data(state: State<'_, AppState>) -> Result<ClearResult, String> {
+    let pool = crate::get_db(&state)?;
+    let mut conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let tx = conn
+        .transaction()
         .map_err(|e| format!("Failed to begin transaction: {}", e))?;
 
     // Disable foreign keys for clean cascading deletion
-    sqlx::query("PRAGMA foreign_keys = OFF")
-        .execute(&mut *tx)
-        .await
+    tx.execute("PRAGMA foreign_keys = OFF", [])
         .map_err(|e| format!("Failed to disable foreign keys: {}", e))?;
 
     // Count records before deletion for the result summary
-    let counts = count_all_records(&mut tx).await?;
+    let counts = count_all_records(&tx)?;
 
     // Delete in dependency order (children first)
     let tables_to_clear = [
@@ -634,31 +526,20 @@ pub async fn clear_all_data(pool: State<'_, SqlitePool>) -> Result<ClearResult, 
 
     for table in &tables_to_clear {
         let query = format!("DELETE FROM {}", table);
-        match sqlx::query(&query).execute(&mut *tx).await {
-            Ok(_) => {}
-            Err(e) => {
-                println!("Warning: Could not clear table {}: {}", table, e);
-            }
-        }
+        let _ = tx.execute(&query, []);
     }
 
     // Reset autoincrement counters
     for table in &tables_to_clear {
-        let query = format!(
-            "DELETE FROM sqlite_sequence WHERE name = '{}'",
-            table
-        );
-        let _ = sqlx::query(&query).execute(&mut *tx).await;
+        let query = format!("DELETE FROM sqlite_sequence WHERE name = '{}'", table);
+        let _ = tx.execute(&query, []);
     }
 
     // Re-enable foreign keys
-    sqlx::query("PRAGMA foreign_keys = ON")
-        .execute(&mut *tx)
-        .await
+    tx.execute("PRAGMA foreign_keys = ON", [])
         .map_err(|e| format!("Failed to re-enable foreign keys: {}", e))?;
 
     tx.commit()
-        .await
         .map_err(|e| format!("Failed to commit clear: {}", e))?;
 
     Ok(ClearResult {
@@ -673,39 +554,18 @@ pub async fn clear_all_data(pool: State<'_, SqlitePool>) -> Result<ClearResult, 
 // ======================== HELPERS ========================
 
 /// Count records in main tables before deletion
-async fn count_all_records(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+fn count_all_records(
+    tx: &rusqlite::Transaction,
 ) -> Result<(i64, i64, i64, i64), String> {
-    let accounts: i64 = sqlx::query("SELECT COUNT(*) as c FROM accounts")
-        .fetch_one(&mut **tx)
-        .await
-        .map(|r| r.get("c"))
-        .unwrap_or(0);
-
-    let categories: i64 = sqlx::query("SELECT COUNT(*) as c FROM categories")
-        .fetch_one(&mut **tx)
-        .await
-        .map(|r| r.get("c"))
-        .unwrap_or(0);
-
-    let transactions: i64 = sqlx::query("SELECT COUNT(*) as c FROM transactions")
-        .fetch_one(&mut **tx)
-        .await
-        .map(|r| r.get("c"))
-        .unwrap_or(0);
-
-    let budgets: i64 = sqlx::query("SELECT COUNT(*) as c FROM budgets")
-        .fetch_one(&mut **tx)
-        .await
-        .map(|r| r.get("c"))
-        .unwrap_or(0);
+    let accounts: i64 = tx.query_row("SELECT COUNT(*) as c FROM accounts", [], |row| row.get(0)).unwrap_or(0);
+    let categories: i64 = tx.query_row("SELECT COUNT(*) as c FROM categories", [], |row| row.get(0)).unwrap_or(0);
+    let transactions: i64 = tx.query_row("SELECT COUNT(*) as c FROM transactions", [], |row| row.get(0)).unwrap_or(0);
+    let budgets: i64 = tx.query_row("SELECT COUNT(*) as c FROM budgets", [], |row| row.get(0)).unwrap_or(0);
 
     Ok((accounts, categories, transactions, budgets))
 }
 
 // ======================== RESPONSE TYPES ========================
-
-use serde::Serialize;
 
 #[derive(Debug, Serialize)]
 pub struct RestoreResult {

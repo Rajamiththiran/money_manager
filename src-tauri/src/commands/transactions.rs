@@ -4,12 +4,13 @@ use crate::models::transactions::{
     CategorySpending, CreateTransactionInput, DailySummary, IncomeExpenseSummary, MonthlyTrend,
     Transaction, TransactionFilter, TransactionWithDetails, UpdateTransactionInput,
 };
-use sqlx::{Row, SqlitePool};
+use crate::AppState;
+use rusqlite::params;
 use tauri::State;
 
 /// Load tags for a batch of transaction IDs. Returns a Vec of (transaction_id, TagInfo) pairs.
-async fn load_tags_for_transactions(
-    pool: &SqlitePool,
+fn load_tags_for_transactions(
+    conn: &rusqlite::Connection,
     transaction_ids: &[i64],
 ) -> Result<Vec<(i64, TagInfo)>, String> {
     if transaction_ids.is_empty() {
@@ -26,78 +27,87 @@ async fn load_tags_for_transactions(
         placeholders.join(", ")
     );
 
-    let mut q = sqlx::query(&query_str);
-    for id in transaction_ids {
-        q = q.bind(id);
-    }
+    let mut stmt = conn
+        .prepare(&query_str)
+        .map_err(|e| format!("Failed to prepare query: {}", e))?;
 
-    let rows = q.fetch_all(pool).await.map_err(|e| format!("Failed to load tags: {}", e))?;
+    let params_iter = rusqlite::params_from_iter(transaction_ids.iter());
 
-    Ok(rows
-        .iter()
-        .map(|row| {
-            (
-                row.get::<i64, _>("transaction_id"),
+    let rows = stmt
+        .query_map(params_iter, |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
                 TagInfo {
-                    id: row.get("id"),
-                    name: row.get("name"),
-                    color: row.get("color"),
+                    id: row.get(1)?,
+                    name: row.get(2)?,
+                    color: row.get(3)?,
                 },
-            )
+            ))
         })
-        .collect())
+        .map_err(|e| format!("Failed to load tags: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read tags: {}", e))?;
+
+    Ok(rows)
 }
 
 /// Insert tag associations for a transaction
-async fn insert_transaction_tags(
-    pool: &SqlitePool,
+fn insert_transaction_tags(
+    conn: &rusqlite::Connection,
     transaction_id: i64,
     tag_ids: &[i64],
 ) -> Result<(), String> {
     for tag_id in tag_ids {
-        sqlx::query("INSERT OR IGNORE INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)")
-            .bind(transaction_id)
-            .bind(tag_id)
-            .execute(pool)
-            .await
-            .map_err(|e| format!("Failed to associate tag: {}", e))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO transaction_tags (transaction_id, tag_id) VALUES (?1, ?2)",
+            params![transaction_id, tag_id],
+        )
+        .map_err(|e| format!("Failed to associate tag: {}", e))?;
     }
     Ok(())
 }
 
 #[tauri::command]
-pub async fn get_transactions(pool: State<'_, SqlitePool>) -> Result<Vec<Transaction>, String> {
-    let rows = sqlx::query(
+pub fn get_transactions(state: State<'_, AppState>) -> Result<Vec<Transaction>, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let mut stmt = conn.prepare(
         "SELECT id, date, type, amount, account_id, to_account_id, category_id, memo, photo_path, created_at 
          FROM transactions 
          ORDER BY date DESC, created_at DESC"
-    )
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch transactions: {}", e))?;
+    ).map_err(|e| format!("Query error: {}", e))?;
 
-    Ok(rows
-        .iter()
-        .map(|row| Transaction {
-            id: row.get("id"),
-            date: row.get("date"),
-            transaction_type: row.get("type"),
-            amount: row.get("amount"),
-            account_id: row.get("account_id"),
-            to_account_id: row.get("to_account_id"),
-            category_id: row.get("category_id"),
-            memo: row.get("memo"),
-            photo_path: row.get("photo_path"),
-            created_at: row.get("created_at"),
+    let transactions = stmt
+        .query_map([], |row| {
+            Ok(Transaction {
+                id: row.get(0)?,
+                date: row.get(1)?,
+                transaction_type: row.get(2)?,
+                amount: row.get(3)?,
+                account_id: row.get(4)?,
+                to_account_id: row.get(5)?,
+                category_id: row.get(6)?,
+                memo: row.get(7)?,
+                photo_path: row.get(8)?,
+                created_at: row.get(9)?,
+            })
         })
-        .collect())
+        .map_err(|e| format!("Execution error: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Read error: {}", e))?;
+
+    Ok(transactions)
 }
 
 #[tauri::command]
-pub async fn get_transactions_with_details(
-    pool: State<'_, SqlitePool>,
+pub fn get_transactions_with_details(
+    state: State<'_, AppState>,
 ) -> Result<Vec<TransactionWithDetails>, String> {
-    let rows = sqlx::query(
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let mut stmt = conn.prepare(
         "SELECT 
             t.id, t.date, t.type, t.amount, t.account_id, t.to_account_id, 
             t.category_id, t.memo, t.photo_path, t.created_at,
@@ -109,46 +119,45 @@ pub async fn get_transactions_with_details(
          INNER JOIN accounts a ON t.account_id = a.id
          LEFT JOIN accounts ta ON t.to_account_id = ta.id
          LEFT JOIN categories c ON t.category_id = c.id
-         ORDER BY t.date DESC, t.created_at DESC",
-    )
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch transactions: {}", e))?;
+         ORDER BY t.date DESC, t.created_at DESC"
+    ).map_err(|e| format!("Query error: {}", e))?;
 
-
-    let results: Vec<TransactionWithDetails> = rows
-        .iter()
-        .map(|row| TransactionWithDetails {
-            transaction: Transaction {
-                id: row.get("id"),
-                date: row.get("date"),
-                transaction_type: row.get("type"),
-                amount: row.get("amount"),
-                account_id: row.get("account_id"),
-                to_account_id: row.get("to_account_id"),
-                category_id: row.get("category_id"),
-                memo: row.get("memo"),
-                photo_path: row.get("photo_path"),
-                created_at: row.get("created_at"),
-            },
-            account_name: row.get("account_name"),
-            to_account_name: row.get("to_account_name"),
-            category_name: row.get("category_name"),
-            photo_count: row.get("photo_count"),
-            tags: Vec::new(),
+    let results: Vec<TransactionWithDetails> = stmt
+        .query_map([], |row| {
+            Ok(TransactionWithDetails {
+                transaction: Transaction {
+                    id: row.get(0)?,
+                    date: row.get(1)?,
+                    transaction_type: row.get(2)?,
+                    amount: row.get(3)?,
+                    account_id: row.get(4)?,
+                    to_account_id: row.get(5)?,
+                    category_id: row.get(6)?,
+                    memo: row.get(7)?,
+                    photo_path: row.get(8)?,
+                    created_at: row.get(9)?,
+                },
+                account_name: row.get(10)?,
+                to_account_name: row.get(11)?,
+                category_name: row.get(12)?,
+                photo_count: row.get(13)?,
+                tags: Vec::new(),
+            })
         })
-        .collect();
+        .map_err(|e| format!("Execution error: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Read error: {}", e))?;
 
-    attach_tags(pool.inner(), results).await
+    attach_tags(&conn, results)
 }
 
 // Helper to attach tags to a list of TransactionWithDetails
-async fn attach_tags(
-    pool: &SqlitePool,
+fn attach_tags(
+    conn: &rusqlite::Connection,
     mut results: Vec<TransactionWithDetails>,
 ) -> Result<Vec<TransactionWithDetails>, String> {
     let ids: Vec<i64> = results.iter().map(|r| r.transaction.id).collect();
-    let tag_pairs = load_tags_for_transactions(pool, &ids).await?;
+    let tag_pairs = load_tags_for_transactions(conn, &ids)?;
     for twd in &mut results {
         twd.tags = tag_pairs
             .iter()
@@ -160,10 +169,13 @@ async fn attach_tags(
 }
 
 #[tauri::command]
-pub async fn create_transaction(
-    pool: State<'_, SqlitePool>,
+pub fn create_transaction(
+    state: State<'_, AppState>,
     input: CreateTransactionInput,
 ) -> Result<i64, String> {
+    let pool = crate::get_db(&state)?;
+    let mut conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     // Validate transaction type
     if input.transaction_type != "INCOME"
         && input.transaction_type != "EXPENSE"
@@ -172,235 +184,213 @@ pub async fn create_transaction(
         return Err("Invalid transaction type".to_string());
     }
 
-    // Validate amount
     if input.amount <= 0.0 {
         return Err("Amount must be greater than zero".to_string());
     }
 
     // Validate account exists
-    let account_exists = sqlx::query("SELECT id FROM accounts WHERE id = ?")
-        .bind(input.account_id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?
-        .is_some();
+    let acct_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM accounts WHERE id = ?1",
+            params![input.account_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0) > 0;
 
-    if !account_exists {
+    if !acct_exists {
         return Err("Account does not exist".to_string());
     }
 
     // Validate transfer requirements
     if input.transaction_type == "TRANSFER" {
-        if input.to_account_id.is_none() {
-            return Err("Transfer requires to_account_id".to_string());
-        }
-
-        let to_account_id = input.to_account_id.unwrap();
+        let to_account_id = input.to_account_id.ok_or("Transfer requires to_account_id")?;
         if to_account_id == input.account_id {
             return Err("Cannot transfer to the same account".to_string());
         }
-
-        let to_account_exists = sqlx::query("SELECT id FROM accounts WHERE id = ?")
-            .bind(to_account_id)
-            .fetch_optional(pool.inner())
-            .await
-            .map_err(|e| format!("Database error: {}", e))?
-            .is_some();
-
-        if !to_account_exists {
+        let to_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM accounts WHERE id = ?1",
+                params![to_account_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0) > 0;
+        if !to_exists {
             return Err("Destination account does not exist".to_string());
         }
     }
 
-    // Validate category exists if provided
     if let Some(category_id) = input.category_id {
-        let category_exists = sqlx::query("SELECT id FROM categories WHERE id = ?")
-            .bind(category_id)
-            .fetch_optional(pool.inner())
-            .await
-            .map_err(|e| format!("Database error: {}", e))?
-            .is_some();
-
-        if !category_exists {
+        let cat_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM categories WHERE id = ?1",
+                params![category_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0) > 0;
+        if !cat_exists {
             return Err("Category does not exist".to_string());
         }
     }
 
     // Start transaction
-    let mut tx = pool
-        .begin()
-        .await
+    let tx = conn
+        .transaction()
         .map_err(|e| format!("Transaction error: {}", e))?;
 
     // Insert transaction record
-    let result = sqlx::query(
+    tx.execute(
         "INSERT INTO transactions (date, type, amount, account_id, to_account_id, category_id, memo) 
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            input.date,
+            input.transaction_type,
+            input.amount,
+            input.account_id,
+            input.to_account_id,
+            input.category_id,
+            input.memo
+        ],
     )
-    .bind(&input.date)
-    .bind(&input.transaction_type)
-    .bind(input.amount)
-    .bind(input.account_id)
-    .bind(input.to_account_id)
-    .bind(input.category_id)
-    .bind(&input.memo)
-    .execute(&mut *tx)
-    .await
     .map_err(|e| format!("Failed to create transaction: {}", e))?;
 
-    let transaction_id = result.last_insert_rowid();
+    let transaction_id = tx.last_insert_rowid();
 
-    // Create journal entries based on transaction type
+    // Create journal entries
     match input.transaction_type.as_str() {
         "INCOME" => {
-            // Debit: Account (increase asset)
-            sqlx::query(
+            tx.execute(
                 "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) 
-                 VALUES (?, ?, ?, 0)",
+                 VALUES (?1, ?2, ?3, 0)",
+                params![transaction_id, input.account_id, input.amount],
             )
-            .bind(transaction_id)
-            .bind(input.account_id)
-            .bind(input.amount)
-            .execute(&mut *tx)
-            .await
             .map_err(|e| format!("Failed to create journal entry: {}", e))?;
         }
         "EXPENSE" => {
-            // Credit: Account (decrease asset)
-            sqlx::query(
+            tx.execute(
                 "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) 
-                 VALUES (?, ?, 0, ?)",
+                 VALUES (?1, ?2, 0, ?3)",
+                params![transaction_id, input.account_id, input.amount],
             )
-            .bind(transaction_id)
-            .bind(input.account_id)
-            .bind(input.amount)
-            .execute(&mut *tx)
-            .await
             .map_err(|e| format!("Failed to create journal entry: {}", e))?;
         }
         "TRANSFER" => {
             let to_account_id = input.to_account_id.unwrap();
-
-            // Credit: From Account (decrease)
-            sqlx::query(
+            tx.execute(
                 "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) 
-                 VALUES (?, ?, 0, ?)",
+                 VALUES (?1, ?2, 0, ?3)",
+                params![transaction_id, input.account_id, input.amount],
             )
-            .bind(transaction_id)
-            .bind(input.account_id)
-            .bind(input.amount)
-            .execute(&mut *tx)
-            .await
             .map_err(|e| format!("Failed to create journal entry: {}", e))?;
 
-            // Debit: To Account (increase)
-            sqlx::query(
+            tx.execute(
                 "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) 
-                 VALUES (?, ?, ?, 0)",
+                 VALUES (?1, ?2, ?3, 0)",
+                params![transaction_id, to_account_id, input.amount],
             )
-            .bind(transaction_id)
-            .bind(to_account_id)
-            .bind(input.amount)
-            .execute(&mut *tx)
-            .await
             .map_err(|e| format!("Failed to create journal entry: {}", e))?;
         }
         _ => return Err("Invalid transaction type".to_string()),
     }
 
-    // Commit transaction
-    tx.commit()
-        .await
-        .map_err(|e| format!("Failed to commit transaction: {}", e))?;
-
-    // Insert tags (outside the DB transaction since the main transaction is committed)
+    // Insert tags
     if let Some(tag_ids) = &input.tag_ids {
         if !tag_ids.is_empty() {
-            insert_transaction_tags(pool.inner(), transaction_id, tag_ids).await?;
+            for tag_id in tag_ids {
+                tx.execute(
+                    "INSERT OR IGNORE INTO transaction_tags (transaction_id, tag_id) VALUES (?1, ?2)",
+                    params![transaction_id, tag_id],
+                )
+                .map_err(|e| format!("Failed to associate tag: {}", e))?;
+            }
         }
     }
+
+    tx.commit()
+        .map_err(|e| format!("Failed to commit transaction: {}", e))?;
 
     Ok(transaction_id)
 }
 
 #[tauri::command]
-pub async fn update_transaction(
-    pool: State<'_, SqlitePool>,
+pub fn update_transaction(
+    state: State<'_, AppState>,
     input: UpdateTransactionInput,
 ) -> Result<(), String> {
-    // Check if transaction exists
-    let exists = sqlx::query("SELECT id FROM transactions WHERE id = ?")
-        .bind(input.id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?
-        .is_some();
+    let pool = crate::get_db(&state)?;
+    let mut conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM transactions WHERE id = ?1",
+            params![input.id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0) > 0;
 
     if !exists {
         return Err("Transaction not found".to_string());
     }
 
-    // Build dynamic update - only non-journal fields can be updated
-    // Changing amount/type requires deleting and recreating
     let mut updates = Vec::new();
-    let mut has_updates = false;
 
     if let Some(date) = &input.date {
         updates.push(format!("date = '{}'", date));
-        has_updates = true;
     }
 
     if let Some(category_id) = input.category_id {
         updates.push(format!("category_id = {}", category_id));
-        has_updates = true;
     }
 
     if let Some(memo) = &input.memo {
-        updates.push(format!("memo = '{}'", memo.replace("'", "''")));
-        has_updates = true;
+        updates.push(format!("memo = '{}'", memo.replace('\'', "''")));
     }
 
-    if !has_updates {
+    if updates.is_empty() && input.tag_ids.is_none() {
         return Err("No fields to update".to_string());
     }
 
-    let query = format!(
-        "UPDATE transactions SET {} WHERE id = {}",
-        updates.join(", "),
-        input.id
-    );
+    let tx = conn.transaction().map_err(|e| format!("Transaction error: {}", e))?;
 
-    sqlx::query(&query)
-        .execute(pool.inner())
-        .await
-        .map_err(|e| format!("Failed to update transaction: {}", e))?;
+    if !updates.is_empty() {
+        let query = format!(
+            "UPDATE transactions SET {} WHERE id = {}",
+            updates.join(", "),
+            input.id
+        );
+        tx.execute(&query, [])
+            .map_err(|e| format!("Failed to update transaction: {}", e))?;
+    }
 
     // Replace tags if provided
     if let Some(tag_ids) = &input.tag_ids {
-        sqlx::query("DELETE FROM transaction_tags WHERE transaction_id = ?")
-            .bind(input.id)
-            .execute(pool.inner())
-            .await
+        tx.execute("DELETE FROM transaction_tags WHERE transaction_id = ?1", params![input.id])
             .map_err(|e| format!("Failed to clear old tags: {}", e))?;
         if !tag_ids.is_empty() {
-            insert_transaction_tags(pool.inner(), input.id, tag_ids).await?;
+            for tag_id in tag_ids {
+                tx.execute(
+                    "INSERT OR IGNORE INTO transaction_tags (transaction_id, tag_id) VALUES (?1, ?2)",
+                    params![input.id, tag_id],
+                )
+                .map_err(|e| format!("Failed to associate tag: {}", e))?;
+            }
         }
     }
+
+    tx.commit().map_err(|e| format!("Failed to commit update: {}", e))?;
 
     Ok(())
 }
 
 #[tauri::command]
-pub async fn delete_transaction(
-    pool: State<'_, SqlitePool>,
-    transaction_id: i64,
-) -> Result<(), String> {
-    // Journal entries will be deleted automatically due to ON DELETE CASCADE
-    sqlx::query("DELETE FROM transactions WHERE id = ?")
-        .bind(transaction_id)
-        .execute(pool.inner())
-        .await
-        .map_err(|e| format!("Failed to delete transaction: {}", e))?;
+pub fn delete_transaction(state: State<'_, AppState>, transaction_id: i64) -> Result<(), String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    conn.execute(
+        "DELETE FROM transactions WHERE id = ?1",
+        params![transaction_id],
+    )
+    .map_err(|e| format!("Failed to delete transaction: {}", e))?;
 
     Ok(())
 }
@@ -408,10 +398,13 @@ pub async fn delete_transaction(
 // ==================== PHASE 2: FILTERING & ANALYTICS ====================
 
 #[tauri::command]
-pub async fn get_transactions_filtered(
-    pool: State<'_, SqlitePool>,
+pub fn get_transactions_filtered(
+    state: State<'_, AppState>,
     filter: TransactionFilter,
 ) -> Result<Vec<TransactionWithDetails>, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     let mut query = String::from(
         "SELECT 
             t.id, t.date, t.type, t.amount, t.account_id, t.to_account_id, 
@@ -427,7 +420,6 @@ pub async fn get_transactions_filtered(
          WHERE 1=1",
     );
 
-    // Date range filter
     if let Some(start_date) = &filter.start_date {
         query.push_str(&format!(" AND t.date >= '{}'", start_date));
     }
@@ -435,12 +427,10 @@ pub async fn get_transactions_filtered(
         query.push_str(&format!(" AND t.date <= '{}'", end_date));
     }
 
-    // Transaction type filter
     if let Some(txn_type) = &filter.transaction_type {
         query.push_str(&format!(" AND t.type = '{}'", txn_type));
     }
 
-    // Account filter
     if let Some(account_id) = filter.account_id {
         query.push_str(&format!(
             " AND (t.account_id = {} OR t.to_account_id = {})",
@@ -448,7 +438,6 @@ pub async fn get_transactions_filtered(
         ));
     }
 
-    // Category filter (with optional children)
     if let Some(category_id) = filter.category_id {
         if filter.include_subcategories.unwrap_or(false) {
             query.push_str(&format!(
@@ -462,16 +451,14 @@ pub async fn get_transactions_filtered(
         }
     }
 
-    // Search filter
     if let Some(search) = &filter.search_query {
-        let escaped_search = search.replace("'", "''");
+        let escaped_search = search.replace('\'', "''");
         query.push_str(&format!(
             " AND (t.memo LIKE '%{}%' OR CAST(t.amount AS TEXT) LIKE '%{}%')",
             escaped_search, escaped_search
         ));
     }
 
-    // Tag filter (OR logic: matches ANY selected tag)
     if let Some(tag_ids) = &filter.tag_ids {
         if !tag_ids.is_empty() {
             let id_list: Vec<String> = tag_ids.iter().map(|id| id.to_string()).collect();
@@ -484,60 +471,60 @@ pub async fn get_transactions_filtered(
 
     query.push_str(" ORDER BY t.date DESC, t.created_at DESC");
 
-    let rows = sqlx::query(&query)
-        .fetch_all(pool.inner())
-        .await
-        .map_err(|e| format!("Failed to fetch filtered transactions: {}", e))?;
+    let mut stmt = conn
+        .prepare(&query)
+        .map_err(|e| format!("Query error: {}", e))?;
 
-    let results: Vec<TransactionWithDetails> = rows
-        .iter()
-        .map(|row| TransactionWithDetails {
-            transaction: Transaction {
-                id: row.get("id"),
-                date: row.get("date"),
-                transaction_type: row.get("type"),
-                amount: row.get("amount"),
-                account_id: row.get("account_id"),
-                to_account_id: row.get("to_account_id"),
-                category_id: row.get("category_id"),
-                memo: row.get("memo"),
-                photo_path: row.get("photo_path"),
-                created_at: row.get("created_at"),
-            },
-            account_name: row.get("account_name"),
-            to_account_name: row.get("to_account_name"),
-            category_name: row.get("category_name"),
-            photo_count: row.get("photo_count"),
-            tags: Vec::new(),
+    let results: Vec<TransactionWithDetails> = stmt
+        .query_map([], |row| {
+            Ok(TransactionWithDetails {
+                transaction: Transaction {
+                    id: row.get(0)?,
+                    date: row.get(1)?,
+                    transaction_type: row.get(2)?,
+                    amount: row.get(3)?,
+                    account_id: row.get(4)?,
+                    to_account_id: row.get(5)?,
+                    category_id: row.get(6)?,
+                    memo: row.get(7)?,
+                    photo_path: row.get(8)?,
+                    created_at: row.get(9)?,
+                },
+                account_name: row.get(10)?,
+                to_account_name: row.get(11)?,
+                category_name: row.get(12)?,
+                photo_count: row.get(13)?,
+                tags: Vec::new(),
+            })
         })
-        .collect();
+        .map_err(|e| format!("Execute error: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Read error: {}", e))?;
 
-    attach_tags(pool.inner(), results).await
+    attach_tags(&conn, results)
 }
 
 #[tauri::command]
-pub async fn get_income_expense_summary(
-    pool: State<'_, SqlitePool>,
+pub fn get_income_expense_summary(
+    state: State<'_, AppState>,
     start_date: String,
     end_date: String,
 ) -> Result<IncomeExpenseSummary, String> {
-    let row = sqlx::query(
-        "SELECT 
-            CAST(COALESCE(SUM(CASE WHEN type = 'INCOME' THEN amount ELSE 0 END), 0) AS REAL) as total_income,
-            CAST(COALESCE(SUM(CASE WHEN type = 'EXPENSE' THEN amount ELSE 0 END), 0) AS REAL) as total_expense,
-            COUNT(*) as transaction_count
-         FROM transactions
-         WHERE date >= ? AND date <= ?",
-    )
-    .bind(&start_date)
-    .bind(&end_date)
-    .fetch_one(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to calculate summary: {}", e))?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    let total_income: f64 = row.get("total_income");
-    let total_expense: f64 = row.get("total_expense");
-    let transaction_count: i64 = row.get("transaction_count");
+    let (total_income, total_expense, transaction_count): (f64, f64, i64) = conn
+        .query_row(
+            "SELECT 
+                CAST(COALESCE(SUM(CASE WHEN type = 'INCOME' THEN amount ELSE 0 END), 0) AS REAL) as total_income,
+                CAST(COALESCE(SUM(CASE WHEN type = 'EXPENSE' THEN amount ELSE 0 END), 0) AS REAL) as total_expense,
+                COUNT(*) as transaction_count
+             FROM transactions
+             WHERE date >= ?1 AND date <= ?2",
+            params![start_date, end_date],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| format!("Failed to calculate summary: {}", e))?;
 
     Ok(IncomeExpenseSummary {
         total_income,
@@ -550,194 +537,199 @@ pub async fn get_income_expense_summary(
 }
 
 #[tauri::command]
-pub async fn get_category_spending(
-    pool: State<'_, SqlitePool>,
+pub fn get_category_spending(
+    state: State<'_, AppState>,
     start_date: String,
     end_date: String,
     transaction_type: String,
 ) -> Result<Vec<CategorySpending>, String> {
-    let rows = sqlx::query(
-        "SELECT 
-            COALESCE(c.parent_id, c.id) as category_id,
-            COALESCE(pc.name, c.name) as category_name,
-            CAST(SUM(t.amount) AS REAL) as total_amount,
-            COUNT(*) as transaction_count
-         FROM transactions t
-         INNER JOIN categories c ON t.category_id = c.id
-         LEFT JOIN categories pc ON c.parent_id = pc.id
-         WHERE t.date >= ? AND t.date <= ? AND t.type = ?
-         GROUP BY COALESCE(c.parent_id, c.id)
-         ORDER BY total_amount DESC",
-    )
-    .bind(&start_date)
-    .bind(&end_date)
-    .bind(&transaction_type)
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to calculate category spending: {}", e))?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    let total: f64 = rows.iter().map(|r| r.get::<f64, _>("total_amount")).sum();
+    let mut stmt = conn
+        .prepare(
+            "SELECT 
+                COALESCE(c.parent_id, c.id) as category_id,
+                COALESCE(pc.name, c.name) as category_name,
+                CAST(SUM(t.amount) AS REAL) as total_amount,
+                COUNT(*) as transaction_count
+             FROM transactions t
+             INNER JOIN categories c ON t.category_id = c.id
+             LEFT JOIN categories pc ON c.parent_id = pc.id
+             WHERE t.date >= ?1 AND t.date <= ?2 AND t.type = ?3
+             GROUP BY COALESCE(c.parent_id, c.id)
+             ORDER BY total_amount DESC",
+        )
+        .map_err(|e| format!("Query error: {}", e))?;
+
+    let rows: Vec<(Option<i64>, Option<String>, f64, i64)> = stmt
+        .query_map(params![start_date, end_date, transaction_type], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+            ))
+        })
+        .map_err(|e| format!("Execute error: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Read error: {}", e))?;
+
+    let total: f64 = rows.iter().map(|r| r.2).sum();
 
     Ok(rows
-        .iter()
-        .map(|row| {
-            let amount: f64 = row.get("total_amount");
-            CategorySpending {
-                category_id: row.get("category_id"),
-                category_name: row.get("category_name"),
-                total_amount: amount,
-                transaction_count: row.get("transaction_count"),
-                percentage: if total > 0.0 {
-                    (amount / total) * 100.0
-                } else {
-                    0.0
-                },
-            }
+        .into_iter()
+        .map(|(cat_id, cat_name, amount, count)| CategorySpending {
+            category_id: cat_id.unwrap_or(0),
+            category_name: cat_name.unwrap_or_default(),
+            total_amount: amount,
+            transaction_count: count,
+            percentage: if total > 0.0 {
+                (amount / total) * 100.0
+            } else {
+                0.0
+            },
         })
         .collect())
 }
 
 #[tauri::command]
-pub async fn get_daily_summary(
-    pool: State<'_, SqlitePool>,
+pub fn get_daily_summary(
+    state: State<'_, AppState>,
     start_date: String,
     end_date: String,
 ) -> Result<Vec<DailySummary>, String> {
-    let rows = sqlx::query(
-        "SELECT 
-            date,
-            CAST(COALESCE(SUM(CASE WHEN type = 'INCOME' THEN amount ELSE 0 END), 0) AS REAL) as total_income,
-            CAST(COALESCE(SUM(CASE WHEN type = 'EXPENSE' THEN amount ELSE 0 END), 0) AS REAL) as total_expense,
-            COUNT(*) as transaction_count
-         FROM transactions
-         WHERE date >= ? AND date <= ?
-         GROUP BY date
-         ORDER BY date DESC",
-    )
-    .bind(&start_date)
-    .bind(&end_date)
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to calculate daily summary: {}", e))?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    Ok(rows
-        .iter()
-        .map(|row| {
-            let income: f64 = row.get("total_income");
-            let expense: f64 = row.get("total_expense");
-            DailySummary {
-                date: row.get("date"),
+    let mut stmt = conn
+        .prepare(
+            "SELECT 
+                date,
+                CAST(COALESCE(SUM(CASE WHEN type = 'INCOME' THEN amount ELSE 0 END), 0) AS REAL) as total_income,
+                CAST(COALESCE(SUM(CASE WHEN type = 'EXPENSE' THEN amount ELSE 0 END), 0) AS REAL) as total_expense,
+                COUNT(*) as transaction_count
+             FROM transactions
+             WHERE date >= ?1 AND date <= ?2
+             GROUP BY date
+             ORDER BY date DESC",
+        )
+        .map_err(|e| format!("Query error: {}", e))?;
+
+    let summaries = stmt
+        .query_map(params![start_date, end_date], |row| {
+            let income: f64 = row.get(1)?;
+            let expense: f64 = row.get(2)?;
+            Ok(DailySummary {
+                date: row.get(0)?,
                 total_income: income,
                 total_expense: expense,
                 net: income - expense,
-                transaction_count: row.get("transaction_count"),
-            }
+                transaction_count: row.get(3)?,
+            })
         })
-        .collect())
+        .map_err(|e| format!("Execute error: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Read error: {}", e))?;
+
+    Ok(summaries)
 }
 
 #[tauri::command]
-pub async fn search_transactions(
-    pool: State<'_, SqlitePool>,
+pub fn search_transactions(
+    state: State<'_, AppState>,
     query: String,
 ) -> Result<Vec<TransactionWithDetails>, String> {
-    let escaped_query = query.replace("'", "''");
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    let rows = sqlx::query(
-        "SELECT 
-            t.id, t.date, t.type, t.amount, t.account_id, t.to_account_id, 
-            t.category_id, t.memo, t.photo_path, t.created_at,
-            a.name as account_name,
-            ta.name as to_account_name,
-            c.name as category_name,
-            (SELECT COUNT(*) FROM transaction_photos tp WHERE tp.transaction_id = t.id) as photo_count
-         FROM transactions t
-         INNER JOIN accounts a ON t.account_id = a.id
-         LEFT JOIN accounts ta ON t.to_account_id = ta.id
-         LEFT JOIN categories c ON t.category_id = c.id
-         WHERE t.memo LIKE ? OR CAST(t.amount AS TEXT) LIKE ?
-         ORDER BY t.date DESC, t.created_at DESC
-         LIMIT 100",
-    )
-    .bind(format!("%{}%", escaped_query))
-    .bind(format!("%{}%", escaped_query))
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to search transactions: {}", e))?;
+    let escaped_query = query.replace('\'', "''");
 
-    let results: Vec<TransactionWithDetails> = rows
-        .iter()
-        .map(|row| TransactionWithDetails {
-            transaction: Transaction {
-                id: row.get("id"),
-                date: row.get("date"),
-                transaction_type: row.get("type"),
-                amount: row.get("amount"),
-                account_id: row.get("account_id"),
-                to_account_id: row.get("to_account_id"),
-                category_id: row.get("category_id"),
-                memo: row.get("memo"),
-                photo_path: row.get("photo_path"),
-                created_at: row.get("created_at"),
-            },
-            account_name: row.get("account_name"),
-            to_account_name: row.get("to_account_name"),
-            category_name: row.get("category_name"),
-            photo_count: row.get("photo_count"),
-            tags: Vec::new(),
+    let mut stmt = conn
+        .prepare(
+            "SELECT 
+                t.id, t.date, t.type, t.amount, t.account_id, t.to_account_id, 
+                t.category_id, t.memo, t.photo_path, t.created_at,
+                a.name as account_name,
+                ta.name as to_account_name,
+                c.name as category_name,
+                (SELECT COUNT(*) FROM transaction_photos tp WHERE tp.transaction_id = t.id) as photo_count
+             FROM transactions t
+             INNER JOIN accounts a ON t.account_id = a.id
+             LEFT JOIN accounts ta ON t.to_account_id = ta.id
+             LEFT JOIN categories c ON t.category_id = c.id
+             WHERE t.memo LIKE ?1 OR CAST(t.amount AS TEXT) LIKE ?2
+             ORDER BY t.date DESC, t.created_at DESC
+             LIMIT 100",
+        )
+        .map_err(|e| format!("Query error: {}", e))?;
+
+    let search_term = format!("%{}%", escaped_query);
+    let results: Vec<TransactionWithDetails> = stmt
+        .query_map(params![search_term, search_term], |row| {
+            Ok(TransactionWithDetails {
+                transaction: Transaction {
+                    id: row.get(0)?,
+                    date: row.get(1)?,
+                    transaction_type: row.get(2)?,
+                    amount: row.get(3)?,
+                    account_id: row.get(4)?,
+                    to_account_id: row.get(5)?,
+                    category_id: row.get(6)?,
+                    memo: row.get(7)?,
+                    photo_path: row.get(8)?,
+                    created_at: row.get(9)?,
+                },
+                account_name: row.get(10)?,
+                to_account_name: row.get(11)?,
+                category_name: row.get(12)?,
+                photo_count: row.get(13)?,
+                tags: Vec::new(),
+            })
         })
-        .collect();
+        .map_err(|e| format!("Execute error: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Read error: {}", e))?;
 
-    attach_tags(pool.inner(), results).await
+    attach_tags(&conn, results)
 }
 
-// ==================== PHASE 6: REPORTS & ANALYTICS ====================
-
 #[tauri::command]
-pub async fn get_monthly_trends(
-    pool: State<'_, SqlitePool>,
+pub fn get_monthly_trends(
+    state: State<'_, AppState>,
     months: i32,
 ) -> Result<Vec<MonthlyTrend>, String> {
-    let rows = sqlx::query(
-        "SELECT 
-            strftime('%Y-%m', date) as month,
-            CAST(COALESCE(SUM(CASE WHEN type = 'INCOME' THEN amount ELSE 0 END), 0) AS REAL) as income,
-            CAST(COALESCE(SUM(CASE WHEN type = 'EXPENSE' THEN amount ELSE 0 END), 0) AS REAL) as expense,
-            COUNT(*) as transaction_count
-         FROM transactions
-         WHERE date >= date('now', ? || ' months')
-         GROUP BY strftime('%Y-%m', date)
-         ORDER BY month ASC",
-    )
-    .bind(format!("-{}", months))
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch monthly trends: {}", e))?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    Ok(rows
-        .iter()
-        .map(|row| {
-            let month: String = row.get("month");
-            let income: f64 = row.get("income");
-            let expense: f64 = row.get("expense");
+    let mut stmt = conn
+        .prepare(
+            "SELECT 
+                strftime('%Y-%m', date) as month,
+                CAST(COALESCE(SUM(CASE WHEN type = 'INCOME' THEN amount ELSE 0 END), 0) AS REAL) as income,
+                CAST(COALESCE(SUM(CASE WHEN type = 'EXPENSE' THEN amount ELSE 0 END), 0) AS REAL) as expense,
+                COUNT(*) as transaction_count
+             FROM transactions
+             WHERE date >= date('now', ?1 || ' months')
+             GROUP BY strftime('%Y-%m', date)
+             ORDER BY month ASC",
+        )
+        .map_err(|e| format!("Query error: {}", e))?;
+
+    let limit_str = format!("-{}", months);
+    let trends = stmt
+        .query_map(params![limit_str], |row| {
+            let month: String = row.get(0)?;
+            let income: f64 = row.get(1)?;
+            let expense: f64 = row.get(2)?;
 
             // Parse month for display name
             let parts: Vec<&str> = month.split('-').collect();
             let month_name = if parts.len() == 2 {
                 let month_num: u32 = parts[1].parse().unwrap_or(1);
                 let month_names = [
-                    "January",
-                    "February",
-                    "March",
-                    "April",
-                    "May",
-                    "June",
-                    "July",
-                    "August",
-                    "September",
-                    "October",
-                    "November",
-                    "December",
+                    "January", "February", "March", "April", "May", "June",
+                    "July", "August", "September", "October", "November", "December",
                 ];
                 format!(
                     "{} {}",
@@ -750,14 +742,18 @@ pub async fn get_monthly_trends(
                 month.clone()
             };
 
-            MonthlyTrend {
+            Ok(MonthlyTrend {
                 month,
                 month_name,
                 income,
                 expense,
                 net: income - expense,
-                transaction_count: row.get("transaction_count"),
-            }
+                transaction_count: row.get(3)?,
+            })
         })
-        .collect())
+        .map_err(|e| format!("Execute error: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Read error: {}", e))?;
+
+    Ok(trends)
 }

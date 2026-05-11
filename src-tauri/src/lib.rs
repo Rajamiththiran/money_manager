@@ -3,7 +3,19 @@ mod commands;
 mod db;
 mod models;
 
+use db::DbPool;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
+
+/// Application state managed by Tauri.
+/// The database starts as `None` and is populated either immediately
+/// (unencrypted) or after the user provides the master password (encrypted).
+pub struct AppState {
+    pub db: Arc<Mutex<Option<DbPool>>>,
+    pub db_path: PathBuf,
+    pub app_data_dir: PathBuf,
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -21,37 +33,33 @@ pub fn run() {
             }
 
             let db_path = app_data_dir.join("money_manager.db");
-            let database_url = format!("sqlite:{}", db_path.display());
-
             println!("Database location: {}", db_path.display());
 
-            let runtime = tokio::runtime::Runtime::new().unwrap();
-            let pool = runtime.block_on(async {
-                db::init_database_with_url(&database_url)
-                    .await
-                    .expect("Failed to initialize database")
-            });
+            // Check encryption config
+            let encryption_config = db::encryption::read_config(&app_data_dir);
 
-            app.manage(pool.clone());
+            let app_state = AppState {
+                db: Arc::new(Mutex::new(None)),
+                db_path: db_path.clone(),
+                app_data_dir: app_data_dir.clone(),
+            };
 
-            // Auto-backup check: runs silently on startup, never blocks UI
-            let app_handle = app.handle().clone();
-            let pool_for_backup = pool.clone();
-            std::thread::spawn(move || {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async {
-                    match commands::scheduled_backup::check_and_run_auto_backup_internal(
-                        &pool_for_backup,
-                        &app_handle,
-                    )
-                    .await
-                    {
-                        Ok(Some(msg)) => println!("Auto-backup: {}", msg),
-                        Ok(None) => println!("Auto-backup: not due"),
-                        Err(e) => println!("Auto-backup error (non-fatal): {}", e),
+            // If not encrypted, initialize the database immediately
+            if encryption_config.is_none() || !encryption_config.as_ref().unwrap().encrypted {
+                match db::init_database_unencrypted(&db_path) {
+                    Ok(pool) => {
+                        *app_state.db.lock().unwrap() = Some(pool);
+                        println!("Database initialized (unencrypted)");
                     }
-                });
-            });
+                    Err(e) => {
+                        panic!("Failed to initialize database: {}", e);
+                    }
+                }
+            } else {
+                println!("Database is encrypted — waiting for master password");
+            }
+
+            app.manage(app_state);
 
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -63,6 +71,12 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            // Encryption / unlock commands
+            commands::security::is_db_encrypted,
+            commands::security::unlock_database,
+            commands::security::set_master_password,
+            commands::security::change_master_password,
+            commands::security::remove_encryption,
             // Account commands
             commands::accounts::get_account_groups,
             commands::accounts::get_accounts,
@@ -220,4 +234,14 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Helper to get the DbPool from AppState, returning an error if the database
+/// is locked (encrypted but not yet unlocked).
+pub fn get_db(state: &AppState) -> Result<DbPool, String> {
+    let guard = state.db.lock().map_err(|_| "Database lock poisoned".to_string())?;
+    guard
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "Database is locked. Please enter your master password.".to_string())
 }

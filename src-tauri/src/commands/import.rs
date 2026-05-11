@@ -3,22 +3,19 @@ use crate::models::import::{
     ColumnMapping, CsvPreview, ImportHistoryEntry, ImportOptions, ImportResult,
     ImportValidationResult, MatchSuggestion, RowValidation,
 };
-use sqlx::{Row, SqlitePool};
+use crate::AppState;
+use rusqlite::params;
 use std::collections::HashMap;
 use tauri::State;
 
 // ======================== CSV PARSING ========================
 
-/// Read a CSV file and return headers, first 20 rows, total count, and detected delimiter.
 #[tauri::command]
-pub async fn parse_csv_preview(file_path: String) -> Result<CsvPreview, String> {
+pub fn parse_csv_preview(file_path: String) -> Result<CsvPreview, String> {
     let content = std::fs::read(&file_path)
         .map_err(|e| format!("Failed to read file: {}", e))?;
 
-    // Strip BOM if present
     let text = strip_bom(&content);
-
-    // Auto-detect delimiter
     let delimiter = detect_delimiter(&text);
 
     let mut reader = csv::ReaderBuilder::new()
@@ -64,13 +61,15 @@ pub async fn parse_csv_preview(file_path: String) -> Result<CsvPreview, String> 
 
 // ======================== VALIDATION ========================
 
-/// Validate all rows against the column mapping and return per-row status.
 #[tauri::command]
-pub async fn validate_import_mapping(
-    pool: State<'_, SqlitePool>,
+pub fn validate_import_mapping(
+    state: State<'_, AppState>,
     file_path: String,
     mapping: ColumnMapping,
 ) -> Result<ImportValidationResult, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     let content = std::fs::read(&file_path)
         .map_err(|e| format!("Failed to read file: {}", e))?;
     let text = strip_bom(&content);
@@ -82,12 +81,9 @@ pub async fn validate_import_mapping(
         .flexible(true)
         .from_reader(text.as_bytes());
 
-    // Load existing accounts and categories for matching
-    let accounts = load_accounts(pool.inner()).await?;
-    let categories = load_categories(pool.inner()).await?;
-
-    // Load existing transactions for duplicate detection
-    let existing_txns = load_existing_transaction_keys(pool.inner()).await?;
+    let accounts = load_accounts(&conn)?;
+    let categories = load_categories(&conn)?;
+    let existing_txns = load_existing_transaction_keys(&conn)?;
 
     let mut rows: Vec<RowValidation> = Vec::new();
     let mut valid_count: i64 = 0;
@@ -122,15 +118,12 @@ pub async fn validate_import_mapping(
 
         let fields: Vec<String> = record.iter().map(|f| f.trim().to_string()).collect();
 
-        // Extract date
         let raw_date = fields.get(mapping.date_col).cloned().unwrap_or_default();
         let parsed_date = parse_date(&raw_date, &mapping.date_format);
 
-        // Extract amount
         let raw_amount = fields.get(mapping.amount_col).cloned().unwrap_or_default();
         let parsed_amount = parse_amount(&raw_amount);
 
-        // Determine type
         let (txn_type, final_amount) = if let Some(type_col) = mapping.type_col {
             let raw_type = fields.get(type_col).cloned().unwrap_or_default();
             let t = guess_transaction_type(&raw_type);
@@ -146,25 +139,21 @@ pub async fn validate_import_mapping(
             ("EXPENSE".to_string(), parsed_amount.unwrap_or(0.0).abs())
         };
 
-        // Extract account name
         let account_name = mapping
             .account_col
             .and_then(|col| fields.get(col).cloned())
             .unwrap_or_default();
 
-        // Extract category name
         let category_name = mapping
             .category_col
             .and_then(|col| fields.get(col).cloned())
             .unwrap_or_default();
 
-        // Extract memo
         let memo = mapping
             .memo_col
             .and_then(|col| fields.get(col).cloned())
             .unwrap_or_default();
 
-        // Validate
         let mut error: Option<String> = None;
 
         if parsed_date.is_none() {
@@ -173,7 +162,6 @@ pub async fn validate_import_mapping(
             error = Some(format!("Invalid amount: '{}'", raw_amount));
         }
 
-        // Match account
         let matched_account_id = if !account_name.is_empty() {
             let matched = fuzzy_match_name(&account_name, &accounts);
             if matched.is_none() {
@@ -184,7 +172,6 @@ pub async fn validate_import_mapping(
             None
         };
 
-        // Match category
         let matched_category_id = if !category_name.is_empty() {
             let matched = fuzzy_match_name(&category_name, &categories);
             if matched.is_none() {
@@ -195,7 +182,6 @@ pub async fn validate_import_mapping(
             None
         };
 
-        // Duplicate check
         let is_duplicate = if let Some(ref date) = parsed_date {
             let key = format!("{}|{:.2}|{}", date, final_amount, txn_type);
             existing_txns.contains(&key)
@@ -244,17 +230,19 @@ pub async fn validate_import_mapping(
 
 // ======================== FUZZY MATCHING ========================
 
-/// Return match suggestions for a list of names against accounts or categories.
 #[tauri::command]
-pub async fn get_import_matches(
-    pool: State<'_, SqlitePool>,
+pub fn get_import_matches(
+    state: State<'_, AppState>,
     names: Vec<String>,
-    match_type: String, // "account" or "category"
+    match_type: String,
 ) -> Result<Vec<MatchSuggestion>, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     let db_items = if match_type == "account" {
-        load_accounts(pool.inner()).await?
+        load_accounts(&conn)?
     } else {
-        load_categories(pool.inner()).await?
+        load_categories(&conn)?
     };
 
     let mut suggestions: Vec<MatchSuggestion> = Vec::new();
@@ -274,14 +262,16 @@ pub async fn get_import_matches(
 
 // ======================== EXECUTE IMPORT ========================
 
-/// Import all valid rows from the CSV, wrapped in a single DB transaction.
 #[tauri::command]
-pub async fn execute_import(
-    pool: State<'_, SqlitePool>,
+pub fn execute_import(
+    state: State<'_, AppState>,
     file_path: String,
     mapping: ColumnMapping,
     options: ImportOptions,
 ) -> Result<ImportResult, String> {
+    let pool = crate::get_db(&state)?;
+    let mut conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     let content = std::fs::read(&file_path)
         .map_err(|e| format!("Failed to read file: {}", e))?;
     let text = strip_bom(&content);
@@ -290,8 +280,7 @@ pub async fn execute_import(
     let batch_id = uuid::Uuid::new_v4().to_string();
     let can_undo_until = chrono::Utc::now() + chrono::Duration::hours(24);
 
-    // Load existing data for duplicate detection
-    let existing_txns = load_existing_transaction_keys(pool.inner()).await?;
+    let existing_txns = load_existing_transaction_keys(&conn)?;
 
     let mut reader = csv::ReaderBuilder::new()
         .delimiter(delimiter)
@@ -304,11 +293,7 @@ pub async fn execute_import(
     let mut errors: i64 = 0;
     let mut total_rows: i64 = 0;
 
-    // Start atomic transaction
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| format!("Failed to begin transaction: {}", e))?;
+    let tx = conn.transaction().map_err(|e| format!("Failed to begin transaction: {}", e))?;
 
     for result in reader.records() {
         total_rows += 1;
@@ -323,7 +308,6 @@ pub async fn execute_import(
 
         let fields: Vec<String> = record.iter().map(|f| f.trim().to_string()).collect();
 
-        // Parse date
         let raw_date = fields.get(mapping.date_col).cloned().unwrap_or_default();
         let date = match parse_date(&raw_date, &mapping.date_format) {
             Some(d) => d,
@@ -333,7 +317,6 @@ pub async fn execute_import(
             }
         };
 
-        // Parse amount
         let raw_amount = fields.get(mapping.amount_col).cloned().unwrap_or_default();
         let parsed_amount = match parse_amount(&raw_amount) {
             Some(a) => a,
@@ -343,7 +326,6 @@ pub async fn execute_import(
             }
         };
 
-        // Determine type and final amount
         let (txn_type, amount) = if let Some(type_col) = mapping.type_col {
             let raw_type = fields.get(type_col).cloned().unwrap_or_default();
             (guess_transaction_type(&raw_type), parsed_amount.abs())
@@ -362,7 +344,6 @@ pub async fn execute_import(
             continue;
         }
 
-        // Duplicate check
         if options.skip_duplicates {
             let key = format!("{}|{:.2}|{}", date, amount, txn_type);
             if existing_txns.contains(&key) {
@@ -371,7 +352,6 @@ pub async fn execute_import(
             }
         }
 
-        // Resolve account
         let account_name = mapping
             .account_col
             .and_then(|col| fields.get(col).cloned())
@@ -386,7 +366,6 @@ pub async fn execute_import(
             options.default_account_id
         };
 
-        // Resolve category
         let category_name = mapping
             .category_col
             .and_then(|col| fields.get(col).cloned())
@@ -395,31 +374,23 @@ pub async fn execute_import(
             if let Some(&id) = options.category_mapping.get(&category_name) {
                 Some(id)
             } else if options.create_missing_categories {
-                // Create the category on the fly
                 let cat_type = if txn_type == "INCOME" {
                     "INCOME"
                 } else {
                     "EXPENSE"
                 };
-                let result = sqlx::query(
-                    "INSERT INTO categories (name, type) VALUES (?, ?)"
-                )
-                .bind(&category_name)
-                .bind(cat_type)
-                .execute(&mut *tx)
-                .await;
+
+                let result = tx.execute(
+                    "INSERT INTO categories (name, type) VALUES (?1, ?2)",
+                    params![category_name, cat_type],
+                );
 
                 match result {
-                    Ok(r) => Some(r.last_insert_rowid()),
+                    Ok(_) => Some(tx.last_insert_rowid()),
                     Err(_) => {
-                        // Category might already exist (race or re-import)
-                        let existing = sqlx::query("SELECT id FROM categories WHERE name = ?")
-                            .bind(&category_name)
-                            .fetch_optional(&mut *tx)
-                            .await
-                            .ok()
-                            .flatten();
-                        existing.map(|r| r.get::<i64, _>("id"))
+                        let mut stmt = tx.prepare("SELECT id FROM categories WHERE name = ?1").unwrap();
+                        let existing: Option<i64> = stmt.query_row(params![category_name], |row| row.get(0)).ok();
+                        existing
                     }
                 }
             } else {
@@ -429,30 +400,20 @@ pub async fn execute_import(
             None
         };
 
-        // Memo
         let memo = mapping
             .memo_col
             .and_then(|col| fields.get(col).cloned())
             .unwrap_or_default();
         let memo_val = if memo.is_empty() { None } else { Some(memo) };
 
-        // Insert transaction with import_batch_id
-        let result = sqlx::query(
+        let result = tx.execute(
             "INSERT INTO transactions (date, type, amount, account_id, category_id, memo, import_batch_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&date)
-        .bind(&txn_type)
-        .bind(amount)
-        .bind(account_id)
-        .bind(category_id)
-        .bind(&memo_val)
-        .bind(&batch_id)
-        .execute(&mut *tx)
-        .await;
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![date, txn_type, amount, account_id, category_id, memo_val, batch_id],
+        );
 
         let txn_id = match result {
-            Ok(r) => r.last_insert_rowid(),
+            Ok(_) => tx.last_insert_rowid(),
             Err(e) => {
                 eprintln!("Failed to import row {}: {}", total_rows, e);
                 errors += 1;
@@ -460,27 +421,18 @@ pub async fn execute_import(
             }
         };
 
-        // Create journal entries (same logic as create_transaction)
         match txn_type.as_str() {
             "INCOME" => {
-                let _ = sqlx::query(
-                    "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?, ?, ?, 0)",
-                )
-                .bind(txn_id)
-                .bind(account_id)
-                .bind(amount)
-                .execute(&mut *tx)
-                .await;
+                let _ = tx.execute(
+                    "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?1, ?2, ?3, 0)",
+                    params![txn_id, account_id, amount],
+                );
             }
             "EXPENSE" => {
-                let _ = sqlx::query(
-                    "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?, ?, 0, ?)",
-                )
-                .bind(txn_id)
-                .bind(account_id)
-                .bind(amount)
-                .execute(&mut *tx)
-                .await;
+                let _ = tx.execute(
+                    "INSERT INTO journal_entries (transaction_id, account_id, debit, credit) VALUES (?1, ?2, 0, ?3)",
+                    params![txn_id, account_id, amount],
+                );
             }
             _ => {}
         }
@@ -488,26 +440,13 @@ pub async fn execute_import(
         imported += 1;
     }
 
-    // Log to import_history
-    sqlx::query(
+    tx.execute(
         "INSERT INTO import_history (batch_id, filename, total_rows, imported_count, skipped_count, error_count, status, can_undo_until)
-         VALUES (?, ?, ?, ?, ?, ?, 'COMPLETED', ?)",
-    )
-    .bind(&batch_id)
-    .bind(&file_path)
-    .bind(total_rows)
-    .bind(imported)
-    .bind(skipped)
-    .bind(errors)
-    .bind(can_undo_until.to_rfc3339())
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("Failed to log import history: {}", e))?;
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'COMPLETED', ?7)",
+        params![batch_id, file_path, total_rows, imported, skipped, errors, can_undo_until.to_rfc3339()],
+    ).map_err(|e| format!("Failed to log import history: {}", e))?;
 
-    // Commit everything
-    tx.commit()
-        .await
-        .map_err(|e| format!("Failed to commit import: {}", e))?;
+    tx.commit().map_err(|e| format!("Failed to commit import: {}", e))?;
 
     Ok(ImportResult {
         batch_id,
@@ -519,28 +458,28 @@ pub async fn execute_import(
 
 // ======================== UNDO & HISTORY ========================
 
-/// Delete all transactions from a specific import batch (within 24h window).
 #[tauri::command]
-pub async fn undo_import(
-    pool: State<'_, SqlitePool>,
+pub fn undo_import(
+    state: State<'_, AppState>,
     batch_id: String,
 ) -> Result<i64, String> {
-    // Check the history entry exists and is within undo window
-    let history = sqlx::query(
-        "SELECT id, status, can_undo_until FROM import_history WHERE batch_id = ?",
-    )
-    .bind(&batch_id)
-    .fetch_optional(pool.inner())
-    .await
-    .map_err(|e| format!("Database error: {}", e))?
-    .ok_or_else(|| "Import batch not found".to_string())?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    let status: String = history.get("status");
+    let mut stmt = conn.prepare(
+        "SELECT id, status, can_undo_until FROM import_history WHERE batch_id = ?1",
+    ).map_err(|e| format!("Database error: {}", e))?;
+
+    let history = stmt.query_row(params![batch_id], |row| {
+        Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+    }).ok();
+
+    let (status, can_undo_until) = history.ok_or_else(|| "Import batch not found".to_string())?;
+
     if status == "UNDONE" {
         return Err("This import has already been undone".to_string());
     }
 
-    let can_undo_until: String = history.get("can_undo_until");
     let deadline = chrono::DateTime::parse_from_rfc3339(&can_undo_until)
         .map_err(|_| "Invalid undo deadline".to_string())?;
 
@@ -548,66 +487,53 @@ pub async fn undo_import(
         return Err("Undo window has expired (24 hours)".to_string());
     }
 
-    // Delete all transactions with this batch_id (CASCADE removes journal entries)
-    let result = sqlx::query("DELETE FROM transactions WHERE import_batch_id = ?")
-        .bind(&batch_id)
-        .execute(pool.inner())
-        .await
-        .map_err(|e| format!("Failed to undo import: {}", e))?;
+    let deleted = conn.execute("DELETE FROM transactions WHERE import_batch_id = ?1", params![batch_id])
+        .map_err(|e| format!("Failed to undo import: {}", e))? as i64;
 
-    let deleted = result.rows_affected() as i64;
-
-    // Update history status
-    sqlx::query("UPDATE import_history SET status = 'UNDONE' WHERE batch_id = ?")
-        .bind(&batch_id)
-        .execute(pool.inner())
-        .await
+    conn.execute("UPDATE import_history SET status = 'UNDONE' WHERE batch_id = ?1", params![batch_id])
         .map_err(|e| format!("Failed to update import history: {}", e))?;
 
     Ok(deleted)
 }
 
-/// Get all past imports with their undo status.
 #[tauri::command]
-pub async fn get_import_history(
-    pool: State<'_, SqlitePool>,
+pub fn get_import_history(
+    state: State<'_, AppState>,
 ) -> Result<Vec<ImportHistoryEntry>, String> {
-    let rows = sqlx::query(
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let mut stmt = conn.prepare(
         "SELECT id, batch_id, filename, total_rows, imported_count, skipped_count, error_count,
                 status, imported_at, can_undo_until
          FROM import_history
          ORDER BY imported_at DESC",
-    )
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch import history: {}", e))?;
+    ).map_err(|e| format!("Database error: {}", e))?;
 
-    let now = chrono::Utc::now();
+    let rows: Vec<ImportHistoryEntry> = stmt.query_map([], |row| {
+        let status: String = row.get(7)?;
+        let can_undo_until: String = row.get(9)?;
+        let now = chrono::Utc::now();
+        let can_undo = status == "COMPLETED"
+            && chrono::DateTime::parse_from_rfc3339(&can_undo_until)
+                .map(|d| now < d)
+                .unwrap_or(false);
 
-    Ok(rows
-        .iter()
-        .map(|row| {
-            let can_undo_until: String = row.get("can_undo_until");
-            let status: String = row.get("status");
-            let can_undo = status == "COMPLETED"
-                && chrono::DateTime::parse_from_rfc3339(&can_undo_until)
-                    .map(|d| now < d)
-                    .unwrap_or(false);
-
-            ImportHistoryEntry {
-                id: row.get("id"),
-                batch_id: row.get("batch_id"),
-                filename: row.get("filename"),
-                total_rows: row.get("total_rows"),
-                imported_count: row.get("imported_count"),
-                skipped_count: row.get("skipped_count"),
-                error_count: row.get("error_count"),
-                status,
-                imported_at: row.get("imported_at"),
-                can_undo,
-            }
+        Ok(ImportHistoryEntry {
+            id: row.get(0)?,
+            batch_id: row.get(1)?,
+            filename: row.get(2)?,
+            total_rows: row.get(3)?,
+            imported_count: row.get(4)?,
+            skipped_count: row.get(5)?,
+            error_count: row.get(6)?,
+            status,
+            imported_at: row.get(8)?,
+            can_undo,
         })
-        .collect())
+    }).unwrap().filter_map(Result::ok).collect();
+
+    Ok(rows)
 }
 
 // ======================== INTERNAL HELPERS ========================
@@ -643,7 +569,6 @@ fn parse_date(raw: &str, format: &str) -> Option<String> {
         return None;
     }
 
-    // Try the user-specified format first
     let chrono_fmt = format
         .replace("YYYY", "%Y")
         .replace("MM", "%m")
@@ -653,7 +578,6 @@ fn parse_date(raw: &str, format: &str) -> Option<String> {
         return Some(d.format("%Y-%m-%d").to_string());
     }
 
-    // Fallback: try common formats
     let formats = ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y"];
     for fmt in &formats {
         if let Ok(d) = chrono::NaiveDate::parse_from_str(trimmed, fmt) {
@@ -668,7 +592,7 @@ fn parse_amount(raw: &str) -> Option<f64> {
     let cleaned = raw
         .trim()
         .trim_matches('"')
-        .replace(',', "") // Remove thousand separators
+        .replace(',', "")
         .replace(' ', "")
         .replace('$', "")
         .replace('€', "")
@@ -695,58 +619,38 @@ fn guess_transaction_type(raw: &str) -> String {
     }
 }
 
-async fn load_accounts(pool: &SqlitePool) -> Result<Vec<(i64, String)>, String> {
-    let rows = sqlx::query("SELECT id, name FROM accounts ORDER BY name")
-        .fetch_all(pool)
-        .await
-        .map_err(|e| format!("Failed to load accounts: {}", e))?;
-
-    Ok(rows
-        .iter()
-        .map(|r| (r.get::<i64, _>("id"), r.get::<String, _>("name")))
-        .collect())
+fn load_accounts(conn: &rusqlite::Connection) -> Result<Vec<(i64, String)>, String> {
+    let mut stmt = conn.prepare("SELECT id, name FROM accounts ORDER BY name").unwrap();
+    let rows: Vec<(i64, String)> = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().filter_map(Result::ok).collect();
+    Ok(rows)
 }
 
-async fn load_categories(pool: &SqlitePool) -> Result<Vec<(i64, String)>, String> {
-    let rows = sqlx::query("SELECT id, name FROM categories ORDER BY name")
-        .fetch_all(pool)
-        .await
-        .map_err(|e| format!("Failed to load categories: {}", e))?;
-
-    Ok(rows
-        .iter()
-        .map(|r| (r.get::<i64, _>("id"), r.get::<String, _>("name")))
-        .collect())
+fn load_categories(conn: &rusqlite::Connection) -> Result<Vec<(i64, String)>, String> {
+    let mut stmt = conn.prepare("SELECT id, name FROM categories ORDER BY name").unwrap();
+    let rows: Vec<(i64, String)> = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().filter_map(Result::ok).collect();
+    Ok(rows)
 }
 
-async fn load_existing_transaction_keys(pool: &SqlitePool) -> Result<std::collections::HashSet<String>, String> {
-    let rows = sqlx::query("SELECT date, amount, type FROM transactions")
-        .fetch_all(pool)
-        .await
-        .map_err(|e| format!("Failed to load existing transactions: {}", e))?;
-
-    Ok(rows
-        .iter()
-        .map(|r| {
-            let date: String = r.get("date");
-            let amount: f64 = r.get("amount");
-            let txn_type: String = r.get("type");
-            format!("{}|{:.2}|{}", date, amount, txn_type)
-        })
-        .collect())
+fn load_existing_transaction_keys(conn: &rusqlite::Connection) -> Result<std::collections::HashSet<String>, String> {
+    let mut stmt = conn.prepare("SELECT date, amount, type FROM transactions").unwrap();
+    let rows: std::collections::HashSet<String> = stmt.query_map([], |row| {
+        let date: String = row.get(0)?;
+        let amount: f64 = row.get(1)?;
+        let txn_type: String = row.get(2)?;
+        Ok(format!("{}|{:.2}|{}", date, amount, txn_type))
+    }).unwrap().filter_map(Result::ok).collect();
+    Ok(rows)
 }
 
 fn fuzzy_match_name(input: &str, items: &[(i64, String)]) -> Option<i64> {
     let input_lower = input.trim().to_lowercase();
 
-    // Exact match
     for (id, name) in items {
         if name.to_lowercase() == input_lower {
             return Some(*id);
         }
     }
 
-    // Contains match
     for (id, name) in items {
         let name_lower = name.to_lowercase();
         if name_lower.contains(&input_lower) || input_lower.contains(&name_lower) {
@@ -760,14 +664,12 @@ fn fuzzy_match_name(input: &str, items: &[(i64, String)]) -> Option<i64> {
 fn find_best_match(input: &str, items: &[(i64, String)]) -> Option<(i64, String, f64)> {
     let input_lower = input.trim().to_lowercase();
 
-    // Exact match = 1.0
     for (id, name) in items {
         if name.to_lowercase() == input_lower {
             return Some((*id, name.clone(), 1.0));
         }
     }
 
-    // Contains match = 0.7
     for (id, name) in items {
         let name_lower = name.to_lowercase();
         if name_lower.contains(&input_lower) || input_lower.contains(&name_lower) {
@@ -775,7 +677,6 @@ fn find_best_match(input: &str, items: &[(i64, String)]) -> Option<(i64, String,
         }
     }
 
-    // Starts-with match = 0.5
     for (id, name) in items {
         let name_lower = name.to_lowercase();
         if name_lower.starts_with(&input_lower) || input_lower.starts_with(&name_lower) {

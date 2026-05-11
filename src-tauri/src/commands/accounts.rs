@@ -1,216 +1,238 @@
 // File: src-tauri/src/commands/accounts.rs
-use crate::models::account::{
-    Account, AccountGroup, AccountWithBalance, CreateAccountInput, UpdateAccountInput,
-};
-use sqlx::{Row, SqlitePool};
+use crate::models::account::{Account, AccountGroup, AccountWithBalance, CreateAccountInput};
+use crate::AppState;
+use rusqlite::params;
 use tauri::State;
 
 #[tauri::command]
-pub async fn get_account_groups(pool: State<'_, SqlitePool>) -> Result<Vec<AccountGroup>, String> {
-    let rows = sqlx::query("SELECT id, name, type FROM account_groups ORDER BY name")
-        .fetch_all(pool.inner())
-        .await
-        .map_err(|e| format!("Failed to fetch account groups: {}", e))?;
+pub fn get_account_groups(state: State<'_, AppState>) -> Result<Vec<AccountGroup>, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    Ok(rows
-        .iter()
-        .map(|row| AccountGroup {
-            id: row.get("id"),
-            name: row.get("name"),
-            account_type: row.get("type"),
+    let mut stmt = conn
+        .prepare("SELECT id, name, type FROM account_groups ORDER BY id")
+        .map_err(|e| format!("Failed to prepare query: {}", e))?;
+
+    let groups = stmt
+        .query_map([], |row| {
+            Ok(AccountGroup {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                account_type: row.get(2)?,
+            })
         })
-        .collect())
+        .map_err(|e| format!("Failed to fetch account groups: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read account groups: {}", e))?;
+
+    Ok(groups)
 }
 
 #[tauri::command]
-pub async fn get_accounts(pool: State<'_, SqlitePool>) -> Result<Vec<Account>, String> {
-    let rows = sqlx::query(
-        "SELECT id, group_id, name, initial_balance, currency, created_at FROM accounts ORDER BY group_id, name"
-    )
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch accounts: {}", e))?;
+pub fn get_accounts(state: State<'_, AppState>) -> Result<Vec<Account>, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    Ok(rows
-        .iter()
-        .map(|row| Account {
-            id: row.get("id"),
-            group_id: row.get("group_id"),
-            name: row.get("name"),
-            initial_balance: row.get("initial_balance"),
-            currency: row.get("currency"),
-            created_at: row.get("created_at"),
-        })
-        .collect())
-}
-
-#[tauri::command]
-pub async fn get_accounts_with_balance(
-    pool: State<'_, SqlitePool>,
-) -> Result<Vec<AccountWithBalance>, String> {
-    let rows = sqlx::query(
-        "SELECT id, group_id, name, initial_balance, currency, created_at FROM accounts ORDER BY group_id, name"
-    )
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Failed to fetch accounts: {}", e))?;
-
-    let mut results = Vec::new();
-
-    for row in rows.iter() {
-        let account_id: i64 = row.get("id");
-        let account = Account {
-            id: account_id,
-            group_id: row.get("group_id"),
-            name: row.get("name"),
-            initial_balance: row.get("initial_balance"),
-            currency: row.get("currency"),
-            created_at: row.get("created_at"),
-        };
-
-        // Calculate current balance from journal entries
-        let balance_row = sqlx::query(
-            "SELECT CAST(COALESCE(SUM(debit), 0) - COALESCE(SUM(credit), 0) AS REAL) as balance FROM journal_entries WHERE account_id = ?"
+    let mut stmt = conn
+        .prepare(
+            "SELECT a.id, a.group_id, a.name, a.initial_balance, a.currency, a.created_at, ag.name as group_name
+             FROM accounts a
+             INNER JOIN account_groups ag ON a.group_id = ag.id
+             ORDER BY a.name",
         )
-        .bind(account_id)
-        .fetch_one(pool.inner())
-        .await
-        .map_err(|e| format!("Failed to calculate balance: {}", e))?;
+        .map_err(|e| format!("Failed to prepare query: {}", e))?;
 
-        let journal_balance: f64 = balance_row.get("balance");
-        let current_balance = account.initial_balance + journal_balance;
+    let accounts = stmt
+        .query_map([], |row| {
+            Ok(Account {
+                id: row.get(0)?,
+                group_id: row.get(1)?,
+                name: row.get(2)?,
+                initial_balance: row.get(3)?,
+                currency: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })
+        .map_err(|e| format!("Failed to fetch accounts: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read accounts: {}", e))?;
 
-        results.push(AccountWithBalance {
-            account,
-            current_balance,
-        });
-    }
-
-    Ok(results)
+    Ok(accounts)
 }
 
 #[tauri::command]
-pub async fn create_account(
-    pool: State<'_, SqlitePool>,
+pub fn get_accounts_with_balance(
+    state: State<'_, AppState>,
+) -> Result<Vec<AccountWithBalance>, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT a.id, a.group_id, a.name, a.initial_balance, a.currency, a.created_at,
+                    ag.name as group_name, ag.type as group_type,
+                    CAST(COALESCE(SUM(je.debit), 0) - COALESCE(SUM(je.credit), 0) AS REAL) as journal_balance
+             FROM accounts a
+             INNER JOIN account_groups ag ON a.group_id = ag.id
+             LEFT JOIN journal_entries je ON je.account_id = a.id
+             GROUP BY a.id
+             ORDER BY ag.id, a.name",
+        )
+        .map_err(|e| format!("Failed to prepare query: {}", e))?;
+
+    let accounts = stmt
+        .query_map([], |row| {
+            let initial_balance: f64 = row.get(3)?;
+            let journal_balance: f64 = row.get(8)?;
+            let balance = initial_balance + journal_balance;
+
+            Ok(AccountWithBalance {
+                account: Account {
+                    id: row.get(0)?,
+                    group_id: row.get(1)?,
+                    name: row.get(2)?,
+                    initial_balance,
+                    currency: row.get(4)?,
+                    created_at: row.get(5)?,
+                },
+                current_balance: (balance * 100.0).round() / 100.0,
+            })
+        })
+        .map_err(|e| format!("Failed to fetch accounts: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read accounts: {}", e))?;
+
+    Ok(accounts)
+}
+
+#[tauri::command]
+pub fn create_account(
+    state: State<'_, AppState>,
     input: CreateAccountInput,
-) -> Result<i64, String> {
+) -> Result<Account, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
     // Validate group exists
-    let group_exists = sqlx::query("SELECT id FROM account_groups WHERE id = ?")
-        .bind(input.group_id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?
-        .is_some();
+    let group_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM account_groups WHERE id = ?1",
+            params![input.group_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)
+        .unwrap_or(false);
 
     if !group_exists {
-        return Err("Account group does not exist".to_string());
+        return Err("Account group not found".to_string());
     }
 
     let currency = input.currency.unwrap_or_else(|| "LKR".to_string());
 
-    let result = sqlx::query(
-        "INSERT INTO accounts (group_id, name, initial_balance, currency) VALUES (?, ?, ?, ?)",
+    conn.execute(
+        "INSERT INTO accounts (group_id, name, initial_balance, currency) VALUES (?1, ?2, ?3, ?4)",
+        params![input.group_id, input.name, input.initial_balance, currency],
     )
-    .bind(input.group_id)
-    .bind(input.name)
-    .bind(input.initial_balance)
-    .bind(currency)
-    .execute(pool.inner())
-    .await
     .map_err(|e| format!("Failed to create account: {}", e))?;
 
-    Ok(result.last_insert_rowid())
+    let account_id = conn.last_insert_rowid();
+
+    let account = conn
+        .query_row(
+            "SELECT a.id, a.group_id, a.name, a.initial_balance, a.currency, a.created_at
+             FROM accounts a
+             WHERE a.id = ?1",
+            params![account_id],
+            |row| {
+                Ok(Account {
+                    id: row.get(0)?,
+                    group_id: row.get(1)?,
+                    name: row.get(2)?,
+                    initial_balance: row.get(3)?,
+                    currency: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            },
+        )
+        .map_err(|e| format!("Failed to fetch created account: {}", e))?;
+
+    Ok(account)
 }
 
 #[tauri::command]
-pub async fn update_account(
-    pool: State<'_, SqlitePool>,
-    input: UpdateAccountInput,
+pub fn update_account(
+    state: State<'_, AppState>,
+    id: i64,
+    name: Option<String>,
+    initial_balance: Option<f64>,
+    currency: Option<String>,
 ) -> Result<(), String> {
-    // Verify account exists
-    let exists = sqlx::query("SELECT id FROM accounts WHERE id = ?")
-        .bind(input.id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?
-        .is_some();
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    if !exists {
-        return Err("Account not found".to_string());
-    }
-
-    // Build dynamic UPDATE
     let mut set_clauses: Vec<String> = Vec::new();
 
-    if let Some(ref name) = input.name {
-        if name.trim().is_empty() {
-            return Err("Account name cannot be empty".to_string());
-        }
-        set_clauses.push(format!("name = '{}'", name.replace('\'', "''")));
+    if let Some(ref n) = name {
+        set_clauses.push(format!("name = '{}'", n.replace('\'', "''")));
     }
 
-    if let Some(group_id) = input.group_id {
-        // Validate group exists
-        let group_exists = sqlx::query("SELECT id FROM account_groups WHERE id = ?")
-            .bind(group_id)
-            .fetch_optional(pool.inner())
-            .await
-            .map_err(|e| format!("Database error: {}", e))?
-            .is_some();
-
-        if !group_exists {
-            return Err("Account group does not exist".to_string());
-        }
-        set_clauses.push(format!("group_id = {}", group_id));
+    if let Some(b) = initial_balance {
+        set_clauses.push(format!("initial_balance = {}", b));
     }
 
-    if let Some(ref currency) = input.currency {
-        if currency.trim().is_empty() {
-            return Err("Currency cannot be empty".to_string());
-        }
-        set_clauses.push(format!("currency = '{}'", currency.replace('\'', "''")));
+    if let Some(ref c) = currency {
+        set_clauses.push(format!("currency = '{}'", c));
     }
 
     if set_clauses.is_empty() {
-        return Ok(());
+        return Err("No fields to update".to_string());
     }
 
-    let sql = format!(
-        "UPDATE accounts SET {} WHERE id = ?",
-        set_clauses.join(", ")
+    let query = format!(
+        "UPDATE accounts SET {} WHERE id = {}",
+        set_clauses.join(", "),
+        id
     );
 
-    sqlx::query(&sql)
-        .bind(input.id)
-        .execute(pool.inner())
-        .await
+    let rows = conn
+        .execute(&query, [])
         .map_err(|e| format!("Failed to update account: {}", e))?;
+
+    if rows == 0 {
+        return Err("Account not found".to_string());
+    }
 
     Ok(())
 }
 
 #[tauri::command]
-pub async fn delete_account(pool: State<'_, SqlitePool>, account_id: i64) -> Result<(), String> {
-    // Check if account has transactions
-    let row = sqlx::query(
-        "SELECT COUNT(*) as count FROM transactions WHERE account_id = ? OR to_account_id = ?",
-    )
-    .bind(account_id)
-    .bind(account_id)
-    .fetch_one(pool.inner())
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
+pub fn delete_account(state: State<'_, AppState>, account_id: i64) -> Result<(), String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    let count: i64 = row.get("count");
-    if count > 0 {
-        return Err("Cannot delete account with existing transactions".to_string());
+    // Check for existing transactions
+    let txn_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM transactions WHERE account_id = ?1 OR to_account_id = ?1",
+            params![account_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if txn_count > 0 {
+        return Err(format!(
+            "Cannot delete account with {} existing transactions. Delete them first.",
+            txn_count
+        ));
     }
 
-    sqlx::query("DELETE FROM accounts WHERE id = ?")
-        .bind(account_id)
-        .execute(pool.inner())
-        .await
+    let rows = conn
+        .execute("DELETE FROM accounts WHERE id = ?1", params![account_id])
         .map_err(|e| format!("Failed to delete account: {}", e))?;
+
+    if rows == 0 {
+        return Err("Account not found".to_string());
+    }
 
     Ok(())
 }

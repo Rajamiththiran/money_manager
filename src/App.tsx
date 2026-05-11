@@ -5,6 +5,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import { AccentColorProvider } from "./contexts/AccentColorContext";
 import { FontSizeProvider } from "./contexts/FontSizeContext";
 import { ToastProvider } from "./components/Toast";
+import DatabaseUnlockScreen from "./components/DatabaseUnlockScreen";
 import LockScreen from "./components/LockScreen";
 import Sidebar from "./components/Sidebar";
 import DashboardView from "./views/DashboardView";
@@ -26,6 +27,7 @@ function AppContent() {
   const [pinEnabled, setPinEnabled] = useState(false);
   const [lockTimeout, setLockTimeout] = useState(5);
   const [isCheckingLock, setIsCheckingLock] = useState(true);
+  const [dbEncrypted, setDbEncrypted] = useState(false);
   const [overdueBillCount, setOverdueBillCount] = useState(0);
   const lastActivityRef = useRef(Date.now());
   const lockTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -40,25 +42,43 @@ function AppContent() {
     }
   }, []);
 
-  // Check if PIN is enabled on mount
+  // Check DB encryption and PIN status on mount
   useEffect(() => {
-    const checkPinStatus = async () => {
+    const checkSecurityStatus = async () => {
       try {
-        const enabled = await invoke<boolean>("is_pin_enabled");
-        setPinEnabled(enabled);
-        if (enabled) {
-          setIsLocked(true);
-          const timeout = await invoke<number>("get_lock_timeout");
-          setLockTimeout(timeout);
+        const encrypted = await invoke<boolean>("is_db_encrypted");
+        setDbEncrypted(encrypted);
+
+        // Only check PIN if DB is not encrypted. 
+        // If encrypted, we must wait for unlock before checking PIN.
+        if (!encrypted) {
+          await checkPinStatus();
+        } else {
+          setIsCheckingLock(false);
         }
       } catch (err) {
-        console.error("Failed to check PIN status:", err);
-      } finally {
+        console.error("Failed to check security status:", err);
         setIsCheckingLock(false);
       }
     };
-    checkPinStatus();
+    checkSecurityStatus();
   }, []);
+
+  const checkPinStatus = async () => {
+    try {
+      const enabled = await invoke<boolean>("is_pin_enabled");
+      setPinEnabled(enabled);
+      if (enabled) {
+        setIsLocked(true);
+        const timeout = await invoke<number>("get_lock_timeout");
+        setLockTimeout(timeout);
+      }
+    } catch (err) {
+      console.error("Failed to check PIN status:", err);
+    } finally {
+      setIsCheckingLock(false);
+    }
+  };
 
   // Track user activity
   const resetActivityTimer = useCallback(() => {
@@ -177,6 +197,13 @@ function AppContent() {
     lastActivityRef.current = Date.now();
   }, []);
 
+  const handleDbUnlock = useCallback(async () => {
+    setDbEncrypted(false);
+    // After DB is unlocked, check if PIN is enabled
+    setIsCheckingLock(true);
+    await checkPinStatus();
+  }, []);
+
   const renderView = () => {
     switch (currentView) {
       case "dashboard":
@@ -213,6 +240,11 @@ function AppContent() {
         <div className="w-8 h-8 border-2 border-gray-600 border-t-white rounded-full animate-spin" />
       </div>
     );
+  }
+
+  // Render Database Unlock Screen first
+  if (dbEncrypted) {
+    return <DatabaseUnlockScreen onUnlock={handleDbUnlock} />;
   }
 
   // Render LockScreen OR main app — never both simultaneously

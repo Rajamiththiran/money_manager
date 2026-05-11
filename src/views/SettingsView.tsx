@@ -41,6 +41,7 @@ import Button from "../components/Button";
 import Select from "../components/Select";
 import SettingsTags from "../components/SettingsTags";
 import ImportWizard from "../components/ImportWizard";
+import DatabaseEncryptionSettings from "../components/DatabaseEncryptionSettings";
 
 // ——— Settings Types ———————————————————————————————
 interface AppSettings {
@@ -1366,10 +1367,13 @@ export default function SettingsView() {
       <SettingSection
         icon={<Lock className="w-5 h-5 text-gray-600 dark:text-gray-300" />}
         title="Security"
-        description="Protect your financial data with a PIN lock"
+        description="Protect your financial data with encryption and PIN lock"
       >
+        {/* Database Encryption Status */}
+        <DatabaseEncryptionSettings />
+        
         {/* PIN Status */}
-        <div className="flex items-center justify-between p-4 rounded-lg bg-gray-50 dark:bg-gray-700/30 border border-gray-100 dark:border-gray-700">
+        <div className="flex items-center justify-between p-4 rounded-lg bg-gray-50 dark:bg-gray-700/30 border border-gray-100 dark:border-gray-700 mt-4">
           <div className="flex items-center gap-3">
             <div
               className={`p-2 rounded-lg ${pinEnabled ? "bg-emerald-100 dark:bg-emerald-900/30" : "bg-gray-100 dark:bg-gray-700"}`}

@@ -1,5 +1,7 @@
 // File: src-tauri/src/commands/photos.rs
-use sqlx::{Row, SqlitePool};
+use crate::AppState;
+use rusqlite::params;
+use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::State;
@@ -8,8 +10,6 @@ const MAX_WIDTH: u32 = 1200;
 const JPEG_QUALITY: u8 = 80;
 
 // ======================== RESPONSE TYPES ========================
-
-use serde::Serialize;
 
 #[derive(Debug, Serialize)]
 pub struct PhotoInfo {
@@ -31,20 +31,25 @@ pub struct CleanupResult {
 /// and link it to the transaction in the transaction_photos table.
 /// Supports multiple photos per transaction.
 #[tauri::command]
-pub async fn attach_photo(
+pub fn attach_photo(
     app_handle: tauri::AppHandle,
-    pool: State<'_, SqlitePool>,
+    state: State<'_, AppState>,
     transaction_id: i64,
     source_path: String,
 ) -> Result<PhotoInfo, String> {
-    // 1. Validate transaction exists
-    let exists = sqlx::query("SELECT id FROM transactions WHERE id = ?")
-        .bind(transaction_id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    if exists.is_none() {
+    // 1. Validate transaction exists
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM transactions WHERE id = ?1",
+            params![transaction_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0) > 0;
+
+    if !exists {
         return Err(format!("Transaction {} not found", transaction_id));
     }
 
@@ -79,16 +84,13 @@ pub async fn attach_photo(
     compress_and_save(&source_path, &dest_path)?;
 
     // 7. Insert into transaction_photos table
-    let result = sqlx::query(
-        "INSERT INTO transaction_photos (transaction_id, filename) VALUES (?, ?)",
+    conn.execute(
+        "INSERT INTO transaction_photos (transaction_id, filename) VALUES (?1, ?2)",
+        params![transaction_id, filename],
     )
-    .bind(transaction_id)
-    .bind(&filename)
-    .execute(pool.inner())
-    .await
     .map_err(|e| format!("Failed to save photo record: {}", e))?;
 
-    let photo_id = result.last_insert_rowid();
+    let photo_id = conn.last_insert_rowid();
 
     // 8. Return the photo info
     let full_path = dest_path
@@ -109,20 +111,22 @@ pub async fn attach_photo(
 /// Remove a specific photo by its ID from the transaction_photos table
 /// and delete the file from disk.
 #[tauri::command]
-pub async fn remove_photo(
+pub fn remove_photo(
     app_handle: tauri::AppHandle,
-    pool: State<'_, SqlitePool>,
+    state: State<'_, AppState>,
     photo_id: i64,
 ) -> Result<(), String> {
-    // Get the photo record
-    let row = sqlx::query("SELECT filename FROM transaction_photos WHERE id = ?")
-        .bind(photo_id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?
-        .ok_or_else(|| format!("Photo {} not found", photo_id))?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    let filename: String = row.get("filename");
+    // Get the photo record
+    let filename: String = conn
+        .query_row(
+            "SELECT filename FROM transaction_photos WHERE id = ?1",
+            params![photo_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| format!("Photo {} not found", photo_id))?;
 
     // Delete the file from disk
     let photos_dir = get_photos_dir(&app_handle)?;
@@ -133,11 +137,11 @@ pub async fn remove_photo(
     }
 
     // Delete the record from DB
-    sqlx::query("DELETE FROM transaction_photos WHERE id = ?")
-        .bind(photo_id)
-        .execute(pool.inner())
-        .await
-        .map_err(|e| format!("Failed to delete photo record: {}", e))?;
+    conn.execute(
+        "DELETE FROM transaction_photos WHERE id = ?1",
+        params![photo_id],
+    )
+    .map_err(|e| format!("Failed to delete photo record: {}", e))?;
 
     Ok(())
 }
@@ -147,26 +151,35 @@ pub async fn remove_photo(
 /// Get all photos for a given transaction.
 /// Returns a list of PhotoInfo with resolved full paths.
 #[tauri::command]
-pub async fn get_transaction_photos(
+pub fn get_transaction_photos(
     app_handle: tauri::AppHandle,
-    pool: State<'_, SqlitePool>,
+    state: State<'_, AppState>,
     transaction_id: i64,
 ) -> Result<Vec<PhotoInfo>, String> {
-    let rows = sqlx::query(
-        "SELECT id, transaction_id, filename FROM transaction_photos WHERE transaction_id = ? ORDER BY created_at ASC",
-    )
-    .bind(transaction_id)
-    .fetch_all(pool.inner())
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let mut stmt = conn
+        .prepare("SELECT id, transaction_id, filename FROM transaction_photos WHERE transaction_id = ?1 ORDER BY created_at ASC")
+        .map_err(|e| format!("Query error: {}", e))?;
+
+    let photo_records = stmt
+        .query_map(params![transaction_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| format!("Execution error: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Read error: {}", e))?;
 
     let photos_dir = get_photos_dir(&app_handle)?;
     let mut photos = Vec::new();
+    let mut missing_ids = Vec::new();
 
-    for row in &rows {
-        let id: i64 = row.get("id");
-        let txn_id: i64 = row.get("transaction_id");
-        let filename: String = row.get("filename");
+    for (id, txn_id, filename) in photo_records {
         let full_path = photos_dir.join(&filename);
 
         if full_path.exists() {
@@ -177,12 +190,13 @@ pub async fn get_transaction_photos(
                 full_path: full_path.to_str().unwrap_or("").to_string(),
             });
         } else {
-            // File missing on disk — clean up the DB record
-            let _ = sqlx::query("DELETE FROM transaction_photos WHERE id = ?")
-                .bind(id)
-                .execute(pool.inner())
-                .await;
+            missing_ids.push(id);
         }
+    }
+
+    // Clean up missing records
+    for id in missing_ids {
+        let _ = conn.execute("DELETE FROM transaction_photos WHERE id = ?1", params![id]);
     }
 
     Ok(photos)
@@ -193,9 +207,9 @@ pub async fn get_transaction_photos(
 /// Find photo files on disk that are not linked to any transaction.
 /// Returns the count of deleted files.
 #[tauri::command]
-pub async fn cleanup_orphaned_photos(
+pub fn cleanup_orphaned_photos(
     app_handle: tauri::AppHandle,
-    pool: State<'_, SqlitePool>,
+    state: State<'_, AppState>,
 ) -> Result<CleanupResult, String> {
     let photos_dir = get_photos_dir(&app_handle)?;
 
@@ -206,15 +220,18 @@ pub async fn cleanup_orphaned_photos(
         });
     }
 
-    // Get all photo filenames referenced in the DB (new table)
-    let rows = sqlx::query("SELECT filename FROM transaction_photos")
-        .fetch_all(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    let referenced: std::collections::HashSet<String> = rows
-        .iter()
-        .map(|r| r.get::<String, _>("filename"))
+    // Get all photo filenames referenced in the DB
+    let mut stmt = conn
+        .prepare("SELECT filename FROM transaction_photos")
+        .map_err(|e| format!("Query error: {}", e))?;
+
+    let referenced: std::collections::HashSet<String> = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| format!("Execution error: {}", e))?
+        .filter_map(Result::ok)
         .collect();
 
     // Scan the photos directory
@@ -270,21 +287,24 @@ pub async fn cleanup_orphaned_photos(
 
 /// Copy a photo to a user-chosen destination path (Save As).
 #[tauri::command]
-pub async fn save_photo_to(
+pub fn save_photo_to(
     app_handle: tauri::AppHandle,
-    pool: State<'_, SqlitePool>,
+    state: State<'_, AppState>,
     photo_id: i64,
     dest_path: String,
 ) -> Result<(), String> {
-    // Get the photo record
-    let row = sqlx::query("SELECT filename FROM transaction_photos WHERE id = ?")
-        .bind(photo_id)
-        .fetch_optional(pool.inner())
-        .await
-        .map_err(|e| format!("Database error: {}", e))?
-        .ok_or_else(|| format!("Photo {} not found", photo_id))?;
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    let filename: String = row.get("filename");
+    // Get the photo record
+    let filename: String = conn
+        .query_row(
+            "SELECT filename FROM transaction_photos WHERE id = ?1",
+            params![photo_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| format!("Photo {} not found", photo_id))?;
+
     let photos_dir = get_photos_dir(&app_handle)?;
     let source = photos_dir.join(&filename);
 

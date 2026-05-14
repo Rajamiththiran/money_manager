@@ -102,3 +102,32 @@ pub struct AnalyticsDashboard {
     pub daily_average_expense: f64,
     pub days_in_period: i64,
 }
+
+#[derive(Debug, Serialize)]
+pub struct NetWorthHistory {
+    pub month: String,
+    pub assets: f64,
+    pub liabilities: f64,
+    pub net_worth: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AccountBalanceHistory {
+    pub date: String,
+    pub balance: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SubCategorySpending {
+    pub category_id: i64,
+    pub category_name: String,
+    pub total_amount: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct YearOverYearComparison {
+    pub month: String,
+    pub current_year_amount: f64,
+    pub previous_year_amount: f64,
+    pub percentage_change: f64,
+}

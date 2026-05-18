@@ -10,6 +10,7 @@ export interface CsvPreview {
 export interface ColumnMapping {
   date_col: number;
   amount_col: number;
+  credit_col: number | null;
   type_col: number | null;
   account_col: number | null;
   category_col: number | null;

@@ -14,6 +14,7 @@ pub struct CsvPreview {
 pub struct ColumnMapping {
     pub date_col: usize,
     pub amount_col: usize,
+    pub credit_col: Option<usize>,
     pub type_col: Option<usize>,
     pub account_col: Option<usize>,
     pub category_col: Option<usize>,

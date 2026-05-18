@@ -10,7 +10,8 @@ const STEPS = ["Select File", "Map Columns", "Preview", "Import"] as const;
 
 // Common auto-detect header names
 const DATE_HEADERS = ["date", "transaction date", "trans date", "posting date", "value date", "txn date"];
-const AMOUNT_HEADERS = ["amount", "debit", "credit", "value", "sum", "total"];
+const AMOUNT_HEADERS = ["amount", "debit", "withdrawals", "withdrawal", "value", "sum", "total", "out"];
+const CREDIT_HEADERS = ["credit", "deposits", "deposit", "in", "inflow"];
 const TYPE_HEADERS = ["type", "transaction type", "kind", "category type"];
 const CATEGORY_HEADERS = ["category", "group", "class", "tag"];
 const MEMO_HEADERS = ["memo", "description", "note", "notes", "details", "narration", "reference", "particulars"];
@@ -39,6 +40,7 @@ export default function ImportWizard({ onClose, onComplete }: { onClose: () => v
   const [mapping, setMapping] = useState<ColumnMapping>({
     date_col: 0,
     amount_col: 1,
+    credit_col: null,
     type_col: null,
     account_col: null,
     category_col: null,
@@ -82,6 +84,7 @@ export default function ImportWizard({ onClose, onComplete }: { onClose: () => v
       const headers = result.headers;
       const detectedDate = autoDetectColumn(headers, DATE_HEADERS);
       const detectedAmount = autoDetectColumn(headers, AMOUNT_HEADERS);
+      const detectedCredit = autoDetectColumn(headers, CREDIT_HEADERS);
       const detectedType = autoDetectColumn(headers, TYPE_HEADERS);
       const detectedCategory = autoDetectColumn(headers, CATEGORY_HEADERS);
       const detectedMemo = autoDetectColumn(headers, MEMO_HEADERS);
@@ -91,6 +94,7 @@ export default function ImportWizard({ onClose, onComplete }: { onClose: () => v
         ...prev,
         date_col: detectedDate ?? 0,
         amount_col: detectedAmount ?? (headers.length > 1 ? 1 : 0),
+        credit_col: detectedCredit ?? null,
         type_col: detectedType ?? null,
         category_col: detectedCategory ?? null,
         memo_col: detectedMemo ?? null,
@@ -396,7 +400,8 @@ function StepMapping({ headers, sampleRows, mapping, onMappingChange }: {
 
   const fields: { key: keyof ColumnMapping; label: string; required: boolean; icon: React.ReactNode }[] = [
     { key: "date_col", label: "Date", required: true, icon: "📅" },
-    { key: "amount_col", label: "Amount", required: true, icon: "💰" },
+    { key: "amount_col", label: "Amount / Debit / Withdrawals", required: true, icon: "💰" },
+    { key: "credit_col", label: "Credit / Deposits (Optional)", required: false, icon: "📈" },
     { key: "type_col", label: "Type (Income/Expense)", required: false, icon: "🏷️" },
     { key: "account_col", label: "Account", required: false, icon: "🏦" },
     { key: "category_col", label: "Category", required: false, icon: "📂" },
@@ -477,7 +482,8 @@ function StepMapping({ headers, sampleRows, mapping, onMappingChange }: {
               <thead>
                 <tr className="bg-gray-100 dark:bg-gray-700/50">
                   <th className="px-3 py-2 text-left font-semibold text-gray-600 dark:text-gray-300">Date</th>
-                  <th className="px-3 py-2 text-left font-semibold text-gray-600 dark:text-gray-300">Amount</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 dark:text-gray-300">Amount (Dr)</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 dark:text-gray-300">Amount (Cr)</th>
                   <th className="px-3 py-2 text-left font-semibold text-gray-600 dark:text-gray-300">Type</th>
                   <th className="px-3 py-2 text-left font-semibold text-gray-600 dark:text-gray-300">Category</th>
                   <th className="px-3 py-2 text-left font-semibold text-gray-600 dark:text-gray-300">Memo</th>
@@ -488,6 +494,7 @@ function StepMapping({ headers, sampleRows, mapping, onMappingChange }: {
                   <tr key={ri} className="border-t border-gray-100 dark:border-gray-700/50">
                     <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{row[mapping.date_col] ?? "—"}</td>
                     <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{row[mapping.amount_col] ?? "—"}</td>
+                    <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{mapping.credit_col !== null ? (row[mapping.credit_col] ?? "—") : "—"}</td>
                     <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{mapping.type_col !== null ? (row[mapping.type_col] ?? "—") : "auto"}</td>
                     <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{mapping.category_col !== null ? (row[mapping.category_col] ?? "—") : "—"}</td>
                     <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300 max-w-[200px] truncate">{mapping.memo_col !== null ? (row[mapping.memo_col] ?? "—") : "—"}</td>

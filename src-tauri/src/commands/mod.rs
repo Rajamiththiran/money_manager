@@ -19,3 +19,4 @@ pub mod settings;
 pub mod tags;
 pub mod templates;
 pub mod transactions;
+pub mod advanced;

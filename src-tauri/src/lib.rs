@@ -231,6 +231,15 @@ pub fn run() {
             commands::import::execute_import,
             commands::import::undo_import,
             commands::import::get_import_history,
+            // Advanced commands
+            commands::advanced::get_categorization_rules,
+            commands::advanced::create_categorization_rule,
+            commands::advanced::update_categorization_rule,
+            commands::advanced::delete_categorization_rule,
+            commands::advanced::get_export_templates,
+            commands::advanced::create_export_template,
+            commands::advanced::update_export_template,
+            commands::advanced::delete_export_template,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

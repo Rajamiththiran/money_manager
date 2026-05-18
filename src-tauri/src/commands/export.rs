@@ -5,13 +5,16 @@ use rust_xlsxwriter::{Color, Format, Workbook};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ExportFilter {
     pub start_date: Option<String>,
     pub end_date: Option<String>,
     pub transaction_type: Option<String>,
     pub account_id: Option<i64>,
     pub category_id: Option<i64>,
+    pub columns: Option<Vec<String>>,
+    pub include_pie_chart: Option<bool>,
+    pub include_histogram: Option<bool>,
 }
 
 #[tauri::command]
@@ -22,27 +25,40 @@ pub fn export_transactions_csv(
     let pool = crate::get_db(&state)?;
     let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    let transactions = get_export_transactions(&conn, filter)?;
+    let transactions = get_export_transactions(&conn, filter.clone())?;
+
+    let default_cols = vec![
+        "Date".to_string(),
+        "Type".to_string(),
+        "Account".to_string(),
+        "To Account".to_string(),
+        "Category".to_string(),
+        "Amount".to_string(),
+        "Memo".to_string(),
+    ];
+    let cols = filter.as_ref().and_then(|f| f.columns.clone()).unwrap_or(default_cols);
 
     // CSV Header
-    let mut csv = String::from("Date,Type,Account,To Account,Category,Amount,Memo\n");
+    let mut csv = cols.join(",") + "\n";
 
     // CSV Rows
     for txn in transactions {
-        let row = format!(
-            "\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",{:.2},\"{}\"\n",
-            txn.transaction.date,
-            txn.transaction.transaction_type,
-            txn.account_name,
-            txn.to_account_name.unwrap_or_default(),
-            txn.category_name.unwrap_or_default(),
-            txn.transaction.amount,
-            txn.transaction
-                .memo
-                .unwrap_or_default()
-                .replace('\"', "\"\"")
-        );
-        csv.push_str(&row);
+        let mut row_vals = Vec::new();
+        for col in &cols {
+            let val = match col.as_str() {
+                "Date" => txn.transaction.date.clone(),
+                "Type" => txn.transaction.transaction_type.clone(),
+                "Account" => txn.account_name.clone(),
+                "To Account" => txn.to_account_name.clone().unwrap_or_default(),
+                "Category" => txn.category_name.clone().unwrap_or_default(),
+                "Amount" => format!("{:.2}", txn.transaction.amount),
+                "Memo" => txn.transaction.memo.clone().unwrap_or_default().replace('\"', "\"\""),
+                _ => String::new(),
+            };
+            row_vals.push(format!("\"{}\"", val));
+        }
+        csv.push_str(&row_vals.join(","));
+        csv.push('\n');
     }
 
     Ok(csv)
@@ -56,7 +72,7 @@ pub fn export_transactions_excel(
     let pool = crate::get_db(&state)?;
     let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    let transactions = get_export_transactions(&conn, filter)?;
+    let transactions = get_export_transactions(&conn, filter.clone())?;
 
     let mut workbook = Workbook::new();
     let worksheet = workbook
@@ -259,6 +275,63 @@ pub fn export_transactions_excel(
         &c_tra_dark
     );
 
+    let include_pie = filter.as_ref().and_then(|f| f.include_pie_chart).unwrap_or(false);
+    let include_hist = filter.as_ref().and_then(|f| f.include_histogram).unwrap_or(false);
+
+    if include_pie || include_hist {
+        let mut type_totals: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
+        
+        for t in &transactions {
+            *type_totals.entry(t.transaction.transaction_type.clone()).or_insert(0.0) += t.transaction.amount;
+        }
+
+        if include_pie && !type_totals.is_empty() {
+            let data_start_row = current_row;
+            worksheet.write_string(current_row, 0, "Type").unwrap();
+            worksheet.write_string(current_row, 1, "Amount").unwrap();
+            current_row += 1;
+            
+            for (t_type, amt) in &type_totals {
+                worksheet.write_string(current_row, 0, t_type).unwrap();
+                worksheet.write_number(current_row, 1, *amt).unwrap();
+                current_row += 1;
+            }
+            
+            let mut chart = rust_xlsxwriter::Chart::new(rust_xlsxwriter::ChartType::Pie);
+            chart.add_series()
+                .set_categories(("Report", data_start_row + 1, 0, current_row - 1, 0))
+                .set_values(("Report", data_start_row + 1, 1, current_row - 1, 1));
+            chart.title().set_name("Transaction Types Breakdown");
+            
+            worksheet.insert_chart(current_row + 2, 0, &chart).unwrap();
+            current_row += 18;
+        }
+
+        if include_hist && !type_totals.is_empty() {
+            let data_start_row = current_row;
+            worksheet.write_string(current_row, 0, "Type").unwrap();
+            worksheet.write_string(current_row, 1, "Amount").unwrap();
+            current_row += 1;
+            
+            for (t_type, amt) in &type_totals {
+                worksheet.write_string(current_row, 0, t_type).unwrap();
+                worksheet.write_number(current_row, 1, *amt).unwrap();
+                current_row += 1;
+            }
+            
+            let mut chart = rust_xlsxwriter::Chart::new(rust_xlsxwriter::ChartType::Column);
+            chart.add_series()
+                .set_categories(("Report", data_start_row + 1, 0, current_row - 1, 0))
+                .set_values(("Report", data_start_row + 1, 1, current_row - 1, 1));
+            chart.title().set_name("Transaction Types Comparison");
+            
+            worksheet.insert_chart(current_row + 2, 0, &chart).unwrap();
+            current_row += 18;
+        }
+    }
+
+    let _ = current_row; // Silence unused assignment warning for the last section
+
     let buf = workbook.save_to_buffer().map_err(|e| e.to_string())?;
     Ok(buf)
 }
@@ -271,9 +344,69 @@ pub fn export_transactions_json(
     let pool = crate::get_db(&state)?;
     let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
-    let transactions = get_export_transactions(&conn, filter)?;
+    let transactions = get_export_transactions(&conn, filter.clone())?;
 
-    let result = serde_json::to_string_pretty(&transactions)
+    let mut enriched = Vec::new();
+
+    for txn in transactions {
+        // Fetch tags
+        let mut stmt = conn.prepare(
+            "SELECT t.id, t.name, t.color, t.created_at
+             FROM tags t
+             INNER JOIN transaction_tags tt ON t.id = tt.tag_id
+             WHERE tt.transaction_id = ?1"
+        ).unwrap();
+        let tags: Vec<serde_json::Value> = stmt.query_map([txn.transaction.id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, i64>(0)?,
+                "name": row.get::<_, String>(1)?,
+                "color": row.get::<_, String>(2)?,
+            }))
+        }).unwrap().filter_map(Result::ok).collect();
+
+        // Fetch journal entries
+        let mut stmt = conn.prepare(
+            "SELECT id, account_id, debit, credit, created_at 
+             FROM journal_entries WHERE transaction_id = ?1"
+        ).unwrap();
+        let journal_entries: Vec<serde_json::Value> = stmt.query_map([txn.transaction.id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, i64>(0)?,
+                "account_id": row.get::<_, i64>(1)?,
+                "debit": row.get::<_, f64>(2)?,
+                "credit": row.get::<_, f64>(3)?,
+                "created_at": row.get::<_, String>(4)?,
+            }))
+        }).unwrap().filter_map(Result::ok).collect();
+
+        // Fetch photos metadata
+        let mut stmt = conn.prepare(
+            "SELECT id, file_path, file_size_bytes, mime_type, original_name, created_at
+             FROM transaction_photos WHERE transaction_id = ?1"
+        ).unwrap();
+        let photos: Vec<serde_json::Value> = stmt.query_map([txn.transaction.id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, i64>(0)?,
+                "file_path": row.get::<_, String>(1)?,
+                "file_size_bytes": row.get::<_, i64>(2)?,
+                "mime_type": row.get::<_, String>(3)?,
+                "original_name": row.get::<_, String>(4)?,
+                "created_at": row.get::<_, String>(5)?,
+            }))
+        }).unwrap().filter_map(Result::ok).collect();
+
+        enriched.push(serde_json::json!({
+            "transaction": txn.transaction,
+            "account_name": txn.account_name,
+            "to_account_name": txn.to_account_name,
+            "category_name": txn.category_name,
+            "tags": tags,
+            "journal_entries": journal_entries,
+            "photos_metadata": photos,
+        }));
+    }
+
+    let result = serde_json::to_string_pretty(&enriched)
         .map_err(|e| format!("Failed to serialize: {}", e))?;
 
     Ok(result)

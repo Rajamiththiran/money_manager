@@ -7,6 +7,8 @@ use crate::AppState;
 use rusqlite::params;
 use std::collections::HashMap;
 use tauri::State;
+use crate::models::advanced::CategorizationRule;
+use regex::Regex;
 
 // ======================== CSV PARSING ========================
 
@@ -84,6 +86,7 @@ pub fn validate_import_mapping(
     let accounts = load_accounts(&conn)?;
     let categories = load_categories(&conn)?;
     let existing_txns = load_existing_transaction_keys(&conn)?;
+    let rules = load_categorization_rules(&conn)?;
 
     let mut rows: Vec<RowValidation> = Vec::new();
     let mut valid_count: i64 = 0;
@@ -124,20 +127,42 @@ pub fn validate_import_mapping(
         let raw_amount = fields.get(mapping.amount_col).cloned().unwrap_or_default();
         let parsed_amount = parse_amount(&raw_amount);
 
-        let (txn_type, final_amount) = if let Some(type_col) = mapping.type_col {
+        let mut final_type = String::new();
+        let mut final_amount = 0.0;
+
+        if let Some(credit_col) = mapping.credit_col {
+            let raw_credit = fields.get(credit_col).cloned().unwrap_or_default();
+            if let Some(c) = parse_amount(&raw_credit) {
+                if c > 0.0 {
+                    final_type = "INCOME".to_string();
+                    final_amount = c;
+                }
+            }
+            if final_amount == 0.0 {
+                if let Some(d) = parsed_amount {
+                    final_type = "EXPENSE".to_string();
+                    final_amount = d.abs();
+                }
+            }
+        } else if let Some(type_col) = mapping.type_col {
             let raw_type = fields.get(type_col).cloned().unwrap_or_default();
-            let t = guess_transaction_type(&raw_type);
-            (t, parsed_amount.unwrap_or(0.0).abs())
+            final_type = guess_transaction_type(&raw_type);
+            final_amount = parsed_amount.unwrap_or(0.0).abs();
         } else if mapping.negative_as_expense {
             let amt = parsed_amount.unwrap_or(0.0);
             if amt < 0.0 {
-                ("EXPENSE".to_string(), amt.abs())
+                final_type = "EXPENSE".to_string();
+                final_amount = amt.abs();
             } else {
-                ("INCOME".to_string(), amt)
+                final_type = "INCOME".to_string();
+                final_amount = amt;
             }
         } else {
-            ("EXPENSE".to_string(), parsed_amount.unwrap_or(0.0).abs())
+            final_type = "EXPENSE".to_string();
+            final_amount = parsed_amount.unwrap_or(0.0).abs();
         };
+
+        let txn_type = final_type;
 
         let account_name = mapping
             .account_col
@@ -158,8 +183,8 @@ pub fn validate_import_mapping(
 
         if parsed_date.is_none() {
             error = Some(format!("Invalid date: '{}'", raw_date));
-        } else if parsed_amount.is_none() || final_amount <= 0.0 {
-            error = Some(format!("Invalid amount: '{}'", raw_amount));
+        } else if final_amount <= 0.0 {
+            error = Some("Invalid amount (empty or zero)".to_string());
         }
 
         let matched_account_id = if !account_name.is_empty() {
@@ -172,15 +197,39 @@ pub fn validate_import_mapping(
             None
         };
 
-        let matched_category_id = if !category_name.is_empty() {
+        let mut matched_category_id = None;
+        let mut final_category_name = category_name.clone();
+
+        // 1. Try to apply user-defined categorization rules against the memo
+        if matched_category_id.is_none() && !memo.is_empty() {
+            if let Some((cat_id, cat_name)) = apply_categorization_rules(&memo, &rules, &categories) {
+                matched_category_id = Some(cat_id);
+                final_category_name = cat_name;
+            }
+        }
+
+        // 2. Try to apply rules against the raw category name if present
+        if matched_category_id.is_none() && !category_name.is_empty() {
+            if let Some((cat_id, cat_name)) = apply_categorization_rules(&category_name, &rules, &categories) {
+                matched_category_id = Some(cat_id);
+                final_category_name = cat_name;
+            }
+        }
+
+        // 3. Fallback to fuzzy matching the category name
+        if matched_category_id.is_none() && !category_name.is_empty() {
             let matched = fuzzy_match_name(&category_name, &categories);
             if matched.is_none() {
                 unmatched_categories.insert(category_name.clone(), true);
             }
-            matched
-        } else {
-            None
-        };
+            matched_category_id = matched;
+            if matched_category_id.is_some() {
+                // Find the real category name
+                if let Some(name) = categories.iter().find(|(id, _)| Some(*id) == matched_category_id).map(|(_, n)| n.clone()) {
+                    final_category_name = name;
+                }
+            }
+        }
 
         let is_duplicate = if let Some(ref date) = parsed_date {
             let key = format!("{}|{:.2}|{}", date, final_amount, txn_type);
@@ -208,7 +257,7 @@ pub fn validate_import_mapping(
             amount: final_amount,
             transaction_type: txn_type,
             account_name,
-            category_name,
+            category_name: final_category_name,
             memo,
             error,
             matched_account_id,
@@ -318,26 +367,44 @@ pub fn execute_import(
         };
 
         let raw_amount = fields.get(mapping.amount_col).cloned().unwrap_or_default();
-        let parsed_amount = match parse_amount(&raw_amount) {
-            Some(a) => a,
-            None => {
-                errors += 1;
-                continue;
-            }
-        };
+        let parsed_amount = parse_amount(&raw_amount);
 
-        let (txn_type, amount) = if let Some(type_col) = mapping.type_col {
+        let mut final_type = String::new();
+        let mut amount = 0.0;
+
+        if let Some(credit_col) = mapping.credit_col {
+            let raw_credit = fields.get(credit_col).cloned().unwrap_or_default();
+            if let Some(c) = parse_amount(&raw_credit) {
+                if c > 0.0 {
+                    final_type = "INCOME".to_string();
+                    amount = c;
+                }
+            }
+            if amount == 0.0 {
+                if let Some(d) = parsed_amount {
+                    final_type = "EXPENSE".to_string();
+                    amount = d.abs();
+                }
+            }
+        } else if let Some(type_col) = mapping.type_col {
             let raw_type = fields.get(type_col).cloned().unwrap_or_default();
-            (guess_transaction_type(&raw_type), parsed_amount.abs())
+            final_type = guess_transaction_type(&raw_type);
+            amount = parsed_amount.unwrap_or(0.0).abs();
         } else if mapping.negative_as_expense {
-            if parsed_amount < 0.0 {
-                ("EXPENSE".to_string(), parsed_amount.abs())
+            let amt = parsed_amount.unwrap_or(0.0);
+            if amt < 0.0 {
+                final_type = "EXPENSE".to_string();
+                amount = amt.abs();
             } else {
-                ("INCOME".to_string(), parsed_amount)
+                final_type = "INCOME".to_string();
+                amount = amt;
             }
         } else {
-            ("EXPENSE".to_string(), parsed_amount.abs())
+            final_type = "EXPENSE".to_string();
+            amount = parsed_amount.unwrap_or(0.0).abs();
         };
+
+        let txn_type = final_type;
 
         if amount <= 0.0 {
             errors += 1;
@@ -640,6 +707,56 @@ fn load_existing_transaction_keys(conn: &rusqlite::Connection) -> Result<std::co
         Ok(format!("{}|{:.2}|{}", date, amount, txn_type))
     }).unwrap().filter_map(Result::ok).collect();
     Ok(rows)
+}
+
+fn load_categorization_rules(conn: &rusqlite::Connection) -> Result<Vec<CategorizationRule>, String> {
+    let mut stmt = conn.prepare(
+        "SELECT id, match_pattern, match_type, category_id, priority, created_at, updated_at 
+         FROM categorization_rules ORDER BY priority DESC"
+    ).map_err(|e| format!("Query error: {}", e))?;
+
+    let rules = stmt.query_map([], |row| {
+        Ok(CategorizationRule {
+            id: row.get(0)?,
+            match_pattern: row.get(1)?,
+            match_type: row.get(2)?,
+            category_id: row.get(3)?,
+            priority: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+        })
+    }).unwrap().filter_map(Result::ok).collect();
+    
+    Ok(rules)
+}
+
+fn apply_categorization_rules(text: &str, rules: &[CategorizationRule], categories: &[(i64, String)]) -> Option<(i64, String)> {
+    let text_lower = text.to_lowercase();
+    
+    for rule in rules {
+        let matched = match rule.match_type.as_str() {
+            "exact" => text_lower == rule.match_pattern.to_lowercase(),
+            "contains" => text_lower.contains(&rule.match_pattern.to_lowercase()),
+            "starts_with" => text_lower.starts_with(&rule.match_pattern.to_lowercase()),
+            "regex" => {
+                if let Ok(re) = Regex::new(&rule.match_pattern) {
+                    re.is_match(text)
+                } else {
+                    false
+                }
+            },
+            _ => false,
+        };
+
+        if matched {
+            if let Ok(cat_id) = rule.category_id.parse::<i64>() {
+                if let Some((_, name)) = categories.iter().find(|(id, _)| *id == cat_id) {
+                    return Some((cat_id, name.clone()));
+                }
+            }
+        }
+    }
+    None
 }
 
 fn fuzzy_match_name(input: &str, items: &[(i64, String)]) -> Option<i64> {

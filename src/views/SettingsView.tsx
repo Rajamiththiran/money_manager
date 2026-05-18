@@ -42,6 +42,8 @@ import Select from "../components/Select";
 import SettingsTags from "../components/SettingsTags";
 import ImportWizard from "../components/ImportWizard";
 import DatabaseEncryptionSettings from "../components/DatabaseEncryptionSettings";
+import CategorizationRulesSettings from "../components/CategorizationRulesSettings";
+import ExportModal from "../components/ExportModal";
 
 // ——— Settings Types ———————————————————————————————
 interface AppSettings {
@@ -252,6 +254,7 @@ export default function SettingsView() {
   const [isRestoring, setIsRestoring] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
   const [showImportWizard, setShowImportWizard] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [lastBackupDate, setLastBackupDate] = useState<string | null>(() => {
     return localStorage.getItem("lastBackupDate");
@@ -1075,21 +1078,38 @@ export default function SettingsView() {
         </div>
 
         {/* Action Buttons */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+          <button
+            onClick={() => setShowExportModal(true)}
+            className="flex items-center gap-3 p-4 rounded-lg border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors text-left"
+          >
+            <div className="p-2 rounded-lg bg-indigo-100 dark:bg-indigo-900/30">
+              <Download className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-gray-900 dark:text-white">
+                Export Data
+              </p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Custom CSV, JSON & Excel
+              </p>
+            </div>
+          </button>
+
           <button
             onClick={handleBackup}
             disabled={isBackingUp}
             className="flex items-center gap-3 p-4 rounded-lg border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors text-left disabled:opacity-50"
           >
             <div className="p-2 rounded-lg bg-blue-100 dark:bg-blue-900/30">
-              <Download className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+              <HardDrive className="w-5 h-5 text-blue-600 dark:text-blue-400" />
             </div>
             <div>
               <p className="text-sm font-medium text-gray-900 dark:text-white">
-                Create Backup
+                Full Backup
               </p>
               <p className="text-xs text-gray-500 dark:text-gray-400">
-                Export all data to JSON
+                Save complete database
               </p>
             </div>
           </button>
@@ -1139,13 +1159,20 @@ export default function SettingsView() {
             </div>
             <div>
               <p className="text-sm font-medium text-gray-900 dark:text-white">
-                Import CSV
+                Clean Bank Statement / Import CSV
               </p>
               <p className="text-xs text-gray-500 dark:text-gray-400">
-                Migrate from other apps
+                Auto-categorize and migrate from other apps
               </p>
             </div>
           </button>
+        </div>
+
+        <div className="mt-8">
+          <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-4">
+            Auto-Categorization Rules
+          </h4>
+          <CategorizationRulesSettings />
         </div>
       </SettingSection>
 
@@ -1731,6 +1758,11 @@ export default function SettingsView() {
             loadDbStats();
           }}
         />
+      )}
+
+      {/* Advanced Export Modal */}
+      {showExportModal && (
+        <ExportModal onClose={() => setShowExportModal(false)} />
       )}
     </div>
   );

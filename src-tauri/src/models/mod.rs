@@ -13,3 +13,4 @@ pub mod recurring;
 pub mod tag;
 pub mod template;
 pub mod transactions;
+pub mod advanced;

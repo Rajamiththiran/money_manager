@@ -154,6 +154,10 @@ fn run_migrations(conn: &Connection) -> Result<()> {
             "20240213000001_csv_import",
             include_str!("../../migrations/20240213000001_csv_import.sql"),
         ),
+        (
+            "20240214000001_advanced_export_and_cleaning",
+            include_str!("../../migrations/20240214000001_advanced_export_and_cleaning.sql"),
+        ),
     ];
 
     for (name, sql) in &migrations {

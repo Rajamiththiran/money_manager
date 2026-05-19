@@ -7,8 +7,13 @@ import {
 } from "@heroicons/react/24/outline";
 import { useCurrency } from "../hooks/useCurrency";
 import type { NetWorthSummary } from "../types/analytics";
+import type { WidgetDisplayMode } from "../types/dashboard";
 
-export default function NetWorthCard() {
+interface NetWorthCardProps {
+  displayMode?: WidgetDisplayMode;
+}
+
+export default function NetWorthCard({ displayMode = "expanded" }: NetWorthCardProps) {
   const { formatAmount } = useCurrency();
   const [data, setData] = useState<NetWorthSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -49,6 +54,43 @@ export default function NetWorthCard() {
 
   const isPositive = data.change_amount >= 0;
 
+  // Compact mode: single row, no gradient
+  if (displayMode === "compact") {
+    return (
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-4 mb-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-medium text-gray-500 dark:text-gray-400">
+              Net Worth
+            </span>
+            <span className="text-xl font-bold text-gray-900 dark:text-white">
+              {formatAmount(data.net_worth)}
+            </span>
+          </div>
+          <div
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium ${
+              isPositive
+                ? "bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400"
+                : "bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400"
+            }`}
+          >
+            {isPositive ? (
+              <ArrowTrendingUpIcon className="h-3.5 w-3.5" />
+            ) : (
+              <ArrowTrendingDownIcon className="h-3.5 w-3.5" />
+            )}
+            <span>
+              {formatAmount(Math.abs(data.change_amount))} (
+              {data.change_percentage >= 0 ? "+" : ""}
+              {data.change_percentage.toFixed(1)}%)
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Expanded mode (default — existing design)
   return (
     <div className="bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl shadow-sm p-6 mb-6 text-white">
       <div className="flex items-start justify-between">

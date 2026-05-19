@@ -20,6 +20,10 @@ pub struct RecurringTransaction {
     pub last_executed_date: Option<String>,
     pub execution_count: i64,
     pub created_at: String,
+    pub amount_mode: String,            // "FIXED" or "VARIABLE"
+    pub resume_date: Option<String>,    // auto-resume paused item on this date
+    pub active_months: Option<String>,  // comma-separated month numbers "1,2,3,10,11,12"
+    pub auto_approve: bool,             // true = auto-execute, false = wait for manual approval
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,6 +39,10 @@ pub struct CreateRecurringTransactionInput {
     pub interval_days: Option<i64>, // Only for CUSTOM frequency
     pub start_date: String,
     pub end_date: Option<String>,
+    // V1.2.0 additions
+    pub amount_mode: Option<String>,    // defaults to "FIXED"
+    pub active_months: Option<String>,
+    pub auto_approve: Option<bool>,     // defaults to false
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,6 +54,11 @@ pub struct UpdateRecurringTransactionInput {
     pub frequency: Option<String>,
     pub interval_days: Option<i64>,
     pub end_date: Option<String>,
+    // V1.2.0 additions
+    pub amount_mode: Option<String>,
+    pub resume_date: Option<String>,
+    pub active_months: Option<String>,
+    pub auto_approve: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -65,4 +78,16 @@ pub struct UpcomingExecution {
     pub amount: f64,
     pub next_execution_date: String,
     pub days_until_execution: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RecurringExecutionLog {
+    pub id: i64,
+    pub recurring_id: i64,
+    pub execution_date: String,
+    pub status: String, // SUCCESS, SKIPPED, FAILED, VARIABLE_PENDING
+    pub amount: Option<f64>,
+    pub transaction_id: Option<i64>,
+    pub notes: Option<String>,
+    pub created_at: String,
 }

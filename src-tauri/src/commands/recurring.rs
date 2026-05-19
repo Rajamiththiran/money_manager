@@ -1,7 +1,7 @@
 // File: src-tauri/src/commands/recurring.rs
 use crate::models::recurring::{
-    CreateRecurringTransactionInput, RecurringTransaction, RecurringTransactionWithDetails,
-    UpcomingExecution, UpdateRecurringTransactionInput,
+    CreateRecurringTransactionInput, RecurringExecutionLog, RecurringTransaction,
+    RecurringTransactionWithDetails, UpcomingExecution, UpdateRecurringTransactionInput,
 };
 use crate::models::transactions::CreateTransactionInput;
 use crate::AppState;
@@ -20,7 +20,8 @@ pub fn get_recurring_transactions(
         .prepare(
             "SELECT id, name, description, transaction_type, amount, account_id, to_account_id, 
                     category_id, frequency, interval_days, start_date, end_date, next_execution_date, 
-                    is_active, last_executed_date, execution_count, created_at
+                    is_active, last_executed_date, execution_count, created_at,
+                    amount_mode, resume_date, active_months, auto_approve
              FROM recurring_transactions
              ORDER BY next_execution_date ASC",
         )
@@ -46,6 +47,10 @@ pub fn get_recurring_transactions(
                 last_executed_date: row.get(14)?,
                 execution_count: row.get(15)?,
                 created_at: row.get(16)?,
+                amount_mode: row.get(17)?,
+                resume_date: row.get(18)?,
+                active_months: row.get(19)?,
+                auto_approve: row.get::<_, i64>(20)? == 1,
             })
         })
         .map_err(|e| format!("Execute error: {}", e))?
@@ -69,6 +74,7 @@ pub fn get_recurring_transactions_with_details(
                 rt.account_id, rt.to_account_id, rt.category_id, rt.frequency, 
                 rt.interval_days, rt.start_date, rt.end_date, rt.next_execution_date, 
                 rt.is_active, rt.last_executed_date, rt.execution_count, rt.created_at,
+                rt.amount_mode, rt.resume_date, rt.active_months, rt.auto_approve,
                 a.name as account_name,
                 ta.name as to_account_name,
                 c.name as category_name
@@ -101,10 +107,14 @@ pub fn get_recurring_transactions_with_details(
                     last_executed_date: row.get(14)?,
                     execution_count: row.get(15)?,
                     created_at: row.get(16)?,
+                    amount_mode: row.get(17)?,
+                    resume_date: row.get(18)?,
+                    active_months: row.get(19)?,
+                    auto_approve: row.get::<_, i64>(20)? == 1,
                 },
-                account_name: row.get(17)?,
-                to_account_name: row.get(18)?,
-                category_name: row.get(19)?,
+                account_name: row.get(21)?,
+                to_account_name: row.get(22)?,
+                category_name: row.get(23)?,
             })
         })
         .map_err(|e| format!("Execute error: {}", e))?
@@ -147,7 +157,17 @@ pub fn create_recurring_transaction(
     };
 
     if input.amount <= 0.0 {
-        return Err("Amount must be greater than zero".to_string());
+        // VARIABLE mode allows 0 as placeholder amount
+        let amount_mode = input.amount_mode.as_deref().unwrap_or("FIXED");
+        if amount_mode != "VARIABLE" {
+            return Err("Amount must be greater than zero".to_string());
+        }
+    }
+
+    // Validate amount_mode
+    let amount_mode = input.amount_mode.as_deref().unwrap_or("FIXED");
+    if amount_mode != "FIXED" && amount_mode != "VARIABLE" {
+        return Err("amount_mode must be FIXED or VARIABLE".to_string());
     }
 
     // Validate account
@@ -205,11 +225,19 @@ pub fn create_recurring_transaction(
 
     let next_execution_date = input.start_date.clone();
 
+    // Variable amount mode forces manual approval
+    let auto_approve = if amount_mode == "VARIABLE" {
+        false
+    } else {
+        input.auto_approve.unwrap_or(false)
+    };
+
     conn.execute(
         "INSERT INTO recurring_transactions 
          (name, description, transaction_type, amount, account_id, to_account_id, 
-          category_id, frequency, interval_days, start_date, end_date, next_execution_date) 
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+          category_id, frequency, interval_days, start_date, end_date, next_execution_date,
+          amount_mode, active_months, auto_approve) 
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         params![
             input.name,
             input.description,
@@ -222,7 +250,10 @@ pub fn create_recurring_transaction(
             interval_days,
             input.start_date,
             input.end_date,
-            next_execution_date
+            next_execution_date,
+            amount_mode,
+            input.active_months,
+            auto_approve as i64
         ],
     )
     .map_err(|e| format!("Failed to create recurring transaction: {}", e))?;
@@ -280,6 +311,31 @@ pub fn update_recurring_transaction(
         NaiveDate::parse_from_str(end_date, "%Y-%m-%d")
             .map_err(|_| "Invalid end date format")?;
         updates.push(format!("end_date = '{}'", end_date));
+    }
+    if let Some(amount_mode) = &input.amount_mode {
+        if amount_mode != "FIXED" && amount_mode != "VARIABLE" {
+            return Err("amount_mode must be FIXED or VARIABLE".to_string());
+        }
+        updates.push(format!("amount_mode = '{}'", amount_mode));
+    }
+    if let Some(resume_date) = &input.resume_date {
+        if !resume_date.is_empty() {
+            NaiveDate::parse_from_str(resume_date, "%Y-%m-%d")
+                .map_err(|_| "Invalid resume date format")?;
+            updates.push(format!("resume_date = '{}'", resume_date));
+        } else {
+            updates.push("resume_date = NULL".to_string());
+        }
+    }
+    if let Some(active_months) = &input.active_months {
+        if !active_months.is_empty() {
+            updates.push(format!("active_months = '{}'", active_months.replace('\'', "''")));
+        } else {
+            updates.push("active_months = NULL".to_string());
+        }
+    }
+    if let Some(auto_approve) = input.auto_approve {
+        updates.push(format!("auto_approve = {}", if auto_approve { 1 } else { 0 }));
     }
 
     if updates.is_empty() {
@@ -392,6 +448,14 @@ pub fn skip_next_occurrence(
     )
     .map_err(|e| format!("Failed to skip occurrence: {}", e))?;
 
+    // Write skip log
+    let today_str = chrono::Local::now().naive_local().date().format("%Y-%m-%d").to_string();
+    let _ = conn.execute(
+        "INSERT INTO recurring_execution_log (recurring_id, execution_date, status, notes)
+         VALUES (?1, ?2, 'SKIPPED', 'Manually skipped')",
+        params![recurring_id, today_str],
+    );
+
     Ok(new_date_str)
 }
 
@@ -405,23 +469,27 @@ pub fn execute_recurring_transaction(
 
     let (
         transaction_type, amount, account_id, to_account_id, category_id,
-        frequency, interval_days, next_execution_date, end_date, is_active
-    ): (String, f64, i64, Option<i64>, Option<i64>, String, i64, String, Option<String>, i64) = conn
+        frequency, interval_days, next_execution_date, end_date, is_active, amount_mode
+    ): (String, f64, i64, Option<i64>, Option<i64>, String, i64, String, Option<String>, i64, String) = conn
         .query_row(
             "SELECT transaction_type, amount, account_id, to_account_id, category_id,
-                    frequency, interval_days, next_execution_date, end_date, is_active
+                    frequency, interval_days, next_execution_date, end_date, is_active, amount_mode
              FROM recurring_transactions
              WHERE id = ?1",
             params![recurring_id],
             |row| Ok((
                 row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,
-                row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?
+                row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?
             )),
         )
         .map_err(|_| "Recurring transaction not found".to_string())?;
 
     if is_active == 0 {
         return Err("Cannot execute a paused recurring transaction. Activate it first.".to_string());
+    }
+
+    if amount_mode == "VARIABLE" {
+        return Err("Variable recurring transactions require manual amount confirmation. Use confirm_variable_amount instead.".to_string());
     }
 
     let today = chrono::Local::now().naive_local().date();
@@ -478,6 +546,12 @@ pub fn execute_recurring_transaction(
         )
         .map_err(|e| format!("Failed to update recurring transaction: {}", e))?;
     }
+    // Write execution log
+    let _ = conn.execute(
+        "INSERT INTO recurring_execution_log (recurring_id, execution_date, status, amount, transaction_id, notes)
+         VALUES (?1, ?2, 'SUCCESS', ?3, ?4, 'Auto-executed')",
+        params![recurring_id, today_str, amount, txn_id],
+    );
 
     Ok(txn_id)
 }
@@ -665,4 +739,359 @@ fn calculate_next_execution_date(
         "CUSTOM" => Ok(*current_date + Duration::days(interval_days)),
         _ => Err("Invalid frequency".to_string()),
     }
+}
+
+// ======================== NEW COMMANDS (V1.2.0) ========================
+
+/// Check if a given month is active for a recurring transaction.
+pub fn is_month_active(active_months: &Option<String>, month: u32) -> bool {
+    match active_months {
+        None => true,
+        Some(months_str) if months_str.is_empty() => true,
+        Some(months_str) => months_str
+            .split(',')
+            .any(|m| m.trim().parse::<u32>().map(|v| v == month).unwrap_or(false)),
+    }
+}
+
+#[tauri::command]
+pub fn get_execution_history(
+    state: State<'_, AppState>,
+    recurring_id: i64,
+) -> Result<Vec<RecurringExecutionLog>, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, recurring_id, execution_date, status, amount, transaction_id, notes, created_at
+             FROM recurring_execution_log
+             WHERE recurring_id = ?1
+             ORDER BY execution_date DESC
+             LIMIT 50",
+        )
+        .map_err(|e| format!("Query error: {}", e))?;
+
+    let logs = stmt
+        .query_map(params![recurring_id], |row| {
+            Ok(RecurringExecutionLog {
+                id: row.get(0)?,
+                recurring_id: row.get(1)?,
+                execution_date: row.get(2)?,
+                status: row.get(3)?,
+                amount: row.get(4)?,
+                transaction_id: row.get(5)?,
+                notes: row.get(6)?,
+                created_at: row.get(7)?,
+            })
+        })
+        .map_err(|e| format!("Execute error: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Read error: {}", e))?;
+
+    Ok(logs)
+}
+
+#[tauri::command]
+pub fn confirm_variable_amount(
+    state: State<'_, AppState>,
+    recurring_id: i64,
+    amount: f64,
+) -> Result<i64, String> {
+    if amount <= 0.0 {
+        return Err("Amount must be greater than zero".to_string());
+    }
+
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let (
+        transaction_type, account_id, to_account_id, category_id,
+        frequency, interval_days, next_execution_date, end_date, is_active, amount_mode
+    ): (String, i64, Option<i64>, Option<i64>, String, i64, String, Option<String>, i64, String) = conn
+        .query_row(
+            "SELECT transaction_type, account_id, to_account_id, category_id,
+                    frequency, interval_days, next_execution_date, end_date, is_active, amount_mode
+             FROM recurring_transactions
+             WHERE id = ?1",
+            params![recurring_id],
+            |row| Ok((
+                row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
+                row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?
+            )),
+        )
+        .map_err(|_| "Recurring transaction not found".to_string())?;
+
+    if is_active == 0 {
+        return Err("Cannot execute a paused recurring transaction".to_string());
+    }
+    if amount_mode != "VARIABLE" {
+        return Err("This command is only for VARIABLE recurring transactions".to_string());
+    }
+
+    let today = chrono::Local::now().naive_local().date();
+    let today_str = today.format("%Y-%m-%d").to_string();
+
+    let transaction_input = CreateTransactionInput {
+        date: today_str.clone(),
+        transaction_type,
+        amount,
+        account_id,
+        to_account_id,
+        category_id,
+        memo: Some(format!("Variable recurring — confirmed amount: {:.2}", amount)),
+        tag_ids: None,
+    };
+
+    drop(conn);
+
+    let txn_id = crate::commands::transactions::create_transaction(state.clone(), transaction_input)
+        .map_err(|e| format!("Failed to create transaction: {}", e))?;
+
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let current_date = NaiveDate::parse_from_str(&next_execution_date, "%Y-%m-%d")
+        .map_err(|_| "Invalid next execution date".to_string())?;
+    let new_next_date = calculate_next_execution_date(&current_date, &frequency, interval_days)?;
+
+    let mut should_deactivate = false;
+    if let Some(end_date_str) = &end_date {
+        if let Ok(end_date_parsed) = NaiveDate::parse_from_str(end_date_str, "%Y-%m-%d") {
+            if new_next_date > end_date_parsed {
+                should_deactivate = true;
+            }
+        }
+    }
+
+    if should_deactivate {
+        conn.execute(
+            "UPDATE recurring_transactions SET last_executed_date = ?1, execution_count = execution_count + 1, is_active = 0 WHERE id = ?2",
+            params![today_str, recurring_id],
+        ).map_err(|e| format!("Failed to update: {}", e))?;
+    } else {
+        conn.execute(
+            "UPDATE recurring_transactions SET next_execution_date = ?1, last_executed_date = ?2, execution_count = execution_count + 1 WHERE id = ?3",
+            params![new_next_date.format("%Y-%m-%d").to_string(), today_str, recurring_id],
+        ).map_err(|e| format!("Failed to update: {}", e))?;
+    }
+
+    // Write execution log
+    let _ = conn.execute(
+        "INSERT INTO recurring_execution_log (recurring_id, execution_date, status, amount, transaction_id, notes)
+         VALUES (?1, ?2, 'SUCCESS', ?3, ?4, 'Variable amount confirmed by user')",
+        params![recurring_id, today_str, amount, txn_id],
+    );
+
+    Ok(txn_id)
+}
+
+#[tauri::command]
+pub fn pause_with_resume(
+    state: State<'_, AppState>,
+    recurring_id: i64,
+    resume_date: Option<String>,
+) -> Result<(), String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    if let Some(ref date_str) = resume_date {
+        if !date_str.is_empty() {
+            NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
+                .map_err(|_| "Invalid resume date format. Use YYYY-MM-DD".to_string())?;
+        }
+    }
+
+    conn.execute(
+        "UPDATE recurring_transactions SET is_active = 0, resume_date = ?1 WHERE id = ?2",
+        params![resume_date, recurring_id],
+    )
+    .map_err(|e| format!("Failed to pause: {}", e))?;
+
+    Ok(())
+}
+
+/// Called on app startup or bill refresh. Reactivates paused items whose resume_date has arrived.
+pub fn check_and_resume(pool: &std::sync::Mutex<rusqlite::Connection>) -> Result<(), String> {
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+    let today_str = chrono::Local::now().naive_local().date().format("%Y-%m-%d").to_string();
+
+    conn.execute(
+        "UPDATE recurring_transactions SET is_active = 1, resume_date = NULL
+         WHERE is_active = 0 AND resume_date IS NOT NULL AND resume_date <= ?1",
+        params![today_str],
+    )
+    .map_err(|e| format!("Failed to auto-resume: {}", e))?;
+
+    Ok(())
+}
+
+/// Auto-execute all due recurring transactions that have auto_approve=1 and amount_mode='FIXED'.
+/// Called before loading the bills widget, so auto-approved items never sit in the pending list.
+pub fn process_auto_approvals(pool: &std::sync::Mutex<rusqlite::Connection>) -> Result<Vec<i64>, String> {
+    let today = chrono::Local::now().naive_local().date();
+    let today_str = today.format("%Y-%m-%d").to_string();
+    let current_month = today.month();
+    let mut executed_ids: Vec<i64> = Vec::new();
+
+    // Collect all auto-approvable items
+    let items: Vec<(i64, String, f64, i64, Option<i64>, Option<i64>, String, i64, Option<String>, Option<String>)> = {
+        let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id, transaction_type, amount, account_id, to_account_id, category_id,
+                    frequency, interval_days, end_date, active_months
+             FROM recurring_transactions
+             WHERE is_active = 1
+               AND auto_approve = 1
+               AND amount_mode = 'FIXED'
+               AND next_execution_date <= ?1"
+        ).map_err(|e| format!("Query error: {}", e))?;
+
+        let rows = stmt.query_map(params![today_str], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+            ))
+        }).map_err(|e| format!("Execute error: {}", e))?;
+
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    for (id, txn_type, amount, account_id, to_account_id, category_id, frequency, interval_days, end_date, active_months) in items {
+        // Skip if not in active month
+        if !is_month_active(&active_months, current_month) {
+            // Advance the next_execution_date silently
+            let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+            if let Ok(next_str) = conn.query_row(
+                "SELECT next_execution_date FROM recurring_transactions WHERE id = ?1",
+                params![id],
+                |row| row.get::<_, String>(0),
+            ) {
+                if let Ok(current_date) = NaiveDate::parse_from_str(&next_str, "%Y-%m-%d") {
+                    if let Ok(new_date) = calculate_next_execution_date(&current_date, &frequency, interval_days) {
+                        let _ = conn.execute(
+                            "UPDATE recurring_transactions SET next_execution_date = ?1 WHERE id = ?2",
+                            params![new_date.format("%Y-%m-%d").to_string(), id],
+                        );
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Create the transaction
+        let transaction_input = crate::models::transactions::CreateTransactionInput {
+            date: today_str.clone(),
+            transaction_type: txn_type,
+            amount,
+            account_id,
+            to_account_id,
+            category_id,
+            memo: Some("Auto-executed from recurring transaction".to_string()),
+            tag_ids: None,
+        };
+
+        // Insert transaction directly using pool
+        let txn_id = {
+            let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+            // Insert the transaction
+            conn.execute(
+                "INSERT INTO transactions (date, transaction_type, amount, account_id, to_account_id, category_id, memo)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    transaction_input.date,
+                    transaction_input.transaction_type,
+                    transaction_input.amount,
+                    transaction_input.account_id,
+                    transaction_input.to_account_id,
+                    transaction_input.category_id,
+                    transaction_input.memo
+                ],
+            ).map_err(|e| format!("Failed to auto-execute transaction: {}", e))?;
+
+            let txn_id = conn.last_insert_rowid();
+
+            // Update account balances
+            match transaction_input.transaction_type.as_str() {
+                "INCOME" => {
+                    conn.execute(
+                        "UPDATE accounts SET balance = balance + ?1 WHERE id = ?2",
+                        params![transaction_input.amount, transaction_input.account_id],
+                    ).ok();
+                }
+                "EXPENSE" => {
+                    conn.execute(
+                        "UPDATE accounts SET balance = balance - ?1 WHERE id = ?2",
+                        params![transaction_input.amount, transaction_input.account_id],
+                    ).ok();
+                }
+                "TRANSFER" => {
+                    conn.execute(
+                        "UPDATE accounts SET balance = balance - ?1 WHERE id = ?2",
+                        params![transaction_input.amount, transaction_input.account_id],
+                    ).ok();
+                    if let Some(to_id) = transaction_input.to_account_id {
+                        conn.execute(
+                            "UPDATE accounts SET balance = balance + ?1 WHERE id = ?2",
+                            params![transaction_input.amount, to_id],
+                        ).ok();
+                    }
+                }
+                _ => {}
+            }
+
+            // Update recurring transaction
+            let next_str: String = conn.query_row(
+                "SELECT next_execution_date FROM recurring_transactions WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            ).map_err(|_| "Not found".to_string())?;
+
+            let current_date = NaiveDate::parse_from_str(&next_str, "%Y-%m-%d")
+                .map_err(|_| "Invalid date".to_string())?;
+            let new_next_date = calculate_next_execution_date(&current_date, &frequency, interval_days)?;
+
+            let mut should_deactivate = false;
+            if let Some(ref end_date_str) = end_date {
+                if let Ok(end_date_parsed) = NaiveDate::parse_from_str(end_date_str, "%Y-%m-%d") {
+                    if new_next_date > end_date_parsed {
+                        should_deactivate = true;
+                    }
+                }
+            }
+
+            if should_deactivate {
+                conn.execute(
+                    "UPDATE recurring_transactions SET last_executed_date = ?1, execution_count = execution_count + 1, is_active = 0 WHERE id = ?2",
+                    params![today_str, id],
+                ).ok();
+            } else {
+                conn.execute(
+                    "UPDATE recurring_transactions SET next_execution_date = ?1, last_executed_date = ?2, execution_count = execution_count + 1 WHERE id = ?3",
+                    params![new_next_date.format("%Y-%m-%d").to_string(), today_str, id],
+                ).ok();
+            }
+
+            // Write execution log
+            conn.execute(
+                "INSERT INTO recurring_execution_log (recurring_id, execution_date, status, amount, transaction_id, notes)
+                 VALUES (?1, ?2, 'SUCCESS', ?3, ?4, 'Auto-approved execution')",
+                params![id, today_str, amount, txn_id],
+            ).ok();
+
+            txn_id
+        };
+
+        executed_ids.push(txn_id);
+    }
+
+    Ok(executed_ids)
 }

@@ -32,6 +32,7 @@ import Calendar from "../components/Calendar";
 import QuickAddBar from "../components/QuickAddBar";
 import NetWorthCard from "../components/NetWorthCard";
 import UpcomingBillsWidget from "../components/UpcomingBillsWidget";
+import ScheduledItemsWidget from "../components/ScheduledItemsWidget";
 import GoalsDashboardWidget from "../components/GoalsDashboardWidget";
 import { useDashboardLayout } from "../hooks/useDashboardLayout";
 import type { AccountWithBalance } from "../types/account";
@@ -280,6 +281,13 @@ export default function DashboardView() {
         return (
           <UpcomingBillsWidget
             onBillAction={handleTransactionAdded}
+            displayMode={config.displayMode}
+          />
+        );
+      case "scheduled-items":
+        return (
+          <ScheduledItemsWidget
+            onItemAction={handleTransactionAdded}
             displayMode={config.displayMode}
           />
         );

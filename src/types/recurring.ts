@@ -6,6 +6,8 @@ export type RecurringFrequency =
   | "YEARLY"
   | "CUSTOM";
 
+export type AmountMode = "FIXED" | "VARIABLE";
+
 export interface RecurringTransaction {
   id: number;
   name: string;
@@ -24,6 +26,11 @@ export interface RecurringTransaction {
   last_executed_date: string | null;
   execution_count: number;
   created_at: string;
+  // V1.2.0
+  amount_mode: AmountMode;
+  resume_date: string | null;
+  active_months: string | null; // "1,2,3,10,11,12"
+  auto_approve: boolean;
 }
 
 export interface CreateRecurringTransactionInput {
@@ -38,4 +45,19 @@ export interface CreateRecurringTransactionInput {
   interval_days: number | null;
   start_date: string;
   end_date: string | null;
+  // V1.2.0
+  amount_mode?: AmountMode;
+  active_months?: string | null;
+  auto_approve?: boolean;
+}
+
+export interface RecurringExecutionLog {
+  id: number;
+  recurring_id: number;
+  execution_date: string;
+  status: "SUCCESS" | "SKIPPED" | "FAILED" | "VARIABLE_PENDING";
+  amount: number | null;
+  transaction_id: number | null;
+  notes: string | null;
+  created_at: string;
 }

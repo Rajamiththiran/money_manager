@@ -3,6 +3,7 @@
 export type WidgetId =
   | "net-worth"
   | "upcoming-bills"
+  | "scheduled-items"
   | "goals"
   | "stats-grid"
   | "spending-chart"
@@ -33,6 +34,7 @@ export interface DashboardLayout {
 export const WIDGET_LABELS: Record<WidgetId, string> = {
   "net-worth": "Net Worth",
   "upcoming-bills": "Upcoming Bills",
+  "scheduled-items": "Scheduled Items",
   goals: "Savings Goals",
   "stats-grid": "Stats Overview",
   "spending-chart": "Spending by Category",
@@ -45,6 +47,7 @@ export const WIDGET_LABELS: Record<WidgetId, string> = {
 export const COMPACT_SUPPORTED: WidgetId[] = [
   "net-worth",
   "upcoming-bills",
+  "scheduled-items",
   "goals",
 ];
 
@@ -52,6 +55,7 @@ export const DEFAULT_DASHBOARD_LAYOUT: DashboardLayout = {
   widgets: [
     { id: "net-worth", visible: true, displayMode: "expanded" },
     { id: "upcoming-bills", visible: true, displayMode: "expanded" },
+    { id: "scheduled-items", visible: true, displayMode: "expanded" },
     { id: "goals", visible: true, displayMode: "expanded" },
     { id: "stats-grid", visible: true, displayMode: "expanded" },
     { id: "spending-chart", visible: true, displayMode: "expanded" },

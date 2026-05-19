@@ -1,7 +1,7 @@
 // File: src-tauri/src/commands/bills.rs
 use crate::models::bill::UpcomingBill;
 use crate::AppState;
-use chrono::{Duration, NaiveDate};
+use chrono::{Datelike, Duration, NaiveDate};
 use rusqlite::params;
 use tauri::State;
 
@@ -13,6 +13,12 @@ pub fn get_upcoming_bills(
     days_ahead: i64,
 ) -> Result<Vec<UpcomingBill>, String> {
     let pool = crate::get_db(&state)?;
+
+    // Auto-resume any paused items whose resume_date has arrived (before locking conn)
+    let _ = crate::commands::recurring::check_and_resume(pool.as_ref());
+    // Auto-execute all due items with auto_approve=1 and FIXED amount
+    let _ = crate::commands::recurring::process_auto_approvals(pool.as_ref());
+
     let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
 
     let today = chrono::Local::now().naive_local().date();
@@ -22,17 +28,21 @@ pub fn get_upcoming_bills(
 
     let mut bills: Vec<UpcomingBill> = Vec::new();
 
-    // ── 1. Recurring transactions ──
+    let current_month = today.month();
+
+    // ── 1. Recurring transactions (only manual-approval ones remain) ──
     let mut recurring_stmt = conn
         .prepare(
             r#"
             SELECT rt.id, rt.name, rt.amount, rt.transaction_type, rt.next_execution_date,
                    a.name as account_name,
-                   c.name as category_name
+                   c.name as category_name,
+                   rt.amount_mode, rt.active_months
             FROM recurring_transactions rt
             INNER JOIN accounts a ON rt.account_id = a.id
             LEFT JOIN categories c ON rt.category_id = c.id
             WHERE rt.is_active = 1
+              AND rt.auto_approve = 0
               AND rt.next_execution_date <= ?1
             ORDER BY rt.next_execution_date ASC
             "#,
@@ -44,8 +54,10 @@ pub fn get_upcoming_bills(
             let due_date_str: String = row.get(4)?;
             let due_date = NaiveDate::parse_from_str(&due_date_str, "%Y-%m-%d").unwrap_or(today);
             let days_until = (due_date - today).num_days();
+            let amount_mode: String = row.get(7)?;
+            let active_months: Option<String> = row.get(8)?;
 
-            Ok(UpcomingBill {
+            Ok((UpcomingBill {
                 source: "RECURRING".to_string(),
                 source_id: row.get(0)?,
                 name: row.get(1)?,
@@ -58,13 +70,17 @@ pub fn get_upcoming_bills(
                 is_overdue: days_until < 0,
                 is_due_today: days_until == 0,
                 installment_progress: None,
-            })
+                amount_mode,
+            }, active_months))
         })
         .map_err(|e| format!("Execute error: {}", e))?;
 
     for bill in recurring_iter {
-        if let Ok(b) = bill {
-            bills.push(b);
+        if let Ok((b, active_months)) = bill {
+            // Filter out bills in inactive seasonal months
+            if crate::commands::recurring::is_month_active(&active_months, current_month) {
+                bills.push(b);
+            }
         }
     }
 
@@ -107,6 +123,7 @@ pub fn get_upcoming_bills(
                 is_overdue: days_until < 0,
                 is_due_today: days_until == 0,
                 installment_progress: Some(format!("{}/{}", paid + 1, total)),
+                amount_mode: "FIXED".to_string(),
             })
         })
         .map_err(|e| format!("Execute error: {}", e))?;

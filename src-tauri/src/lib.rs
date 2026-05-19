@@ -114,6 +114,9 @@ pub fn run() {
             commands::recurring::execute_recurring_transaction,
             commands::recurring::get_upcoming_executions,
             commands::recurring::process_recurring_transactions,
+            commands::recurring::get_execution_history,
+            commands::recurring::confirm_variable_amount,
+            commands::recurring::pause_with_resume,
             // Budget commands
             commands::budgets::create_budget,
             commands::budgets::get_budgets,

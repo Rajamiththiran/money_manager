@@ -158,6 +158,14 @@ fn run_migrations(conn: &Connection) -> Result<()> {
             "20240214000001_advanced_export_and_cleaning",
             include_str!("../../migrations/20240214000001_advanced_export_and_cleaning.sql"),
         ),
+        (
+            "20240215000001_recurring_improvements",
+            include_str!("../../migrations/20240215000001_recurring_improvements.sql"),
+        ),
+        (
+            "20240216000001_recurring_approval_mode",
+            include_str!("../../migrations/20240216000001_recurring_approval_mode.sql"),
+        ),
     ];
 
     for (name, sql) in &migrations {

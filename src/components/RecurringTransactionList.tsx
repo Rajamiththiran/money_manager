@@ -10,8 +10,10 @@ import {
   Repeat,
   Calendar,
   Clock,
+  X,
 } from "lucide-react";
 import Button from "./Button";
+import ExecutionHistoryPanel from "./ExecutionHistoryPanel";
 import { useToast } from "./Toast";
 import type { RecurringTransaction } from "../types/recurring";
 
@@ -46,6 +48,16 @@ export default function RecurringTransactionList({
   const [recurring, setRecurring] = useState<RecurringTransaction[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Pause Modal States
+  const [pausingRecurringId, setPausingRecurringId] = useState<number | null>(null);
+  const [resumeDate, setResumeDate] = useState<string>("");
+
+  // Variable amount input state
+  const [variableAmounts, setVariableAmounts] = useState<Record<number, string>>({});
+
+  // Counter to trigger history panel refresh
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+
   useEffect(() => {
     loadRecurring();
   }, [refreshKey]);
@@ -65,17 +77,45 @@ export default function RecurringTransactionList({
   };
 
   const handleToggleStatus = async (item: RecurringTransaction) => {
+    if (item.is_active) {
+      // User clicked Pause. Open dialog to ask for optional resume date.
+      setPausingRecurringId(item.id);
+      setResumeDate("");
+      return;
+    }
+
+    // User clicked Activate. Call normal toggle.
     try {
       const newState = await invoke<boolean>("toggle_recurring_transaction", {
         recurringId: item.id,
       });
       await loadRecurring();
-      success(
-        newState ? "Activated" : "Paused",
-        `"${item.name}" is now ${newState ? "active" : "paused"}.`,
-      );
+      success("Activated", `"${item.name}" is now active.`);
     } catch (err) {
       showError("Failed to toggle status", String(err));
+    }
+  };
+
+  const handleConfirmPause = async () => {
+    if (pausingRecurringId === null) return;
+    try {
+      await invoke("pause_with_resume", {
+        recurringId: pausingRecurringId,
+        resumeDate: resumeDate ? resumeDate : null,
+      });
+      await loadRecurring();
+      const item = recurring.find((r) => r.id === pausingRecurringId);
+      success(
+        "Paused",
+        `"${item?.name || "Transaction"}" is now paused${
+          resumeDate ? ` and will resume on ${formatDate(resumeDate)}` : ""
+        }.`,
+      );
+    } catch (err) {
+      showError("Failed to pause", String(err));
+    } finally {
+      setPausingRecurringId(null);
+      setResumeDate("");
     }
   };
 
@@ -89,8 +129,37 @@ export default function RecurringTransactionList({
         "Transaction Created",
         `"${item.name}" executed. LKR ${item.amount.toLocaleString()} recorded.`,
       );
+      setHistoryRefreshKey((k) => k + 1);
     } catch (err) {
       showError("Failed to execute", String(err));
+    }
+  };
+
+  const handleConfirmVariable = async (item: RecurringTransaction) => {
+    const amountStr = variableAmounts[item.id];
+    const amount = parseFloat(amountStr || "0");
+    if (!amount || amount <= 0) {
+      showError("Invalid amount", "Please enter an amount greater than zero.");
+      return;
+    }
+    try {
+      await invoke<number>("confirm_variable_amount", {
+        recurringId: item.id,
+        amount,
+      });
+      setVariableAmounts((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
+      await loadRecurring();
+      success(
+        "Transaction Created",
+        `"${item.name}" executed with LKR ${amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}.`,
+      );
+      setHistoryRefreshKey((k) => k + 1);
+    } catch (err) {
+      showError("Failed to confirm", String(err));
     }
   };
 
@@ -104,6 +173,7 @@ export default function RecurringTransactionList({
         "Occurrence Skipped",
         `"${item.name}" next execution moved to ${formatDate(newDate)}.`,
       );
+      setHistoryRefreshKey((k) => k + 1);
     } catch (err) {
       showError("Failed to skip", String(err));
     }
@@ -228,6 +298,21 @@ export default function RecurringTransactionList({
                     >
                       {item.is_active ? "Active" : "Paused"}
                     </span>
+                    {item.amount_mode === "VARIABLE" && (
+                      <span className="text-xs px-2 py-0.5 rounded-md bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 font-medium">
+                        Variable
+                      </span>
+                    )}
+                    {item.active_months && (
+                      <span className="text-xs px-2 py-0.5 rounded-md bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-medium">
+                        Seasonal
+                      </span>
+                    )}
+                    {item.auto_approve && (
+                      <span className="text-xs px-2 py-0.5 rounded-md bg-cyan-100 dark:bg-cyan-900/40 text-cyan-700 dark:text-cyan-300 font-medium">
+                        Auto
+                      </span>
+                    )}
                   </div>
                   {item.description && (
                     <p className="text-sm text-gray-500 dark:text-gray-400 truncate">
@@ -239,6 +324,9 @@ export default function RecurringTransactionList({
                   <div
                     className={`text-xl font-bold ${TYPE_COLORS[item.transaction_type]}`}
                   >
+                    {item.amount_mode === "VARIABLE" && (
+                      <span className="text-xs text-amber-500 dark:text-amber-400 font-normal mr-1">Est.</span>
+                    )}
                     LKR{" "}
                     {item.amount.toLocaleString("en-US", {
                       minimumFractionDigits: 2,
@@ -267,19 +355,50 @@ export default function RecurringTransactionList({
                   <span>Ends: {formatDate(item.end_date)}</span>
                 )}
                 <span>Executed: {item.execution_count}×</span>
+                {!item.is_active && item.resume_date && (
+                  <span className="text-blue-500 dark:text-blue-400 font-medium">
+                    Resumes: {formatDate(item.resume_date)}
+                  </span>
+                )}
               </div>
 
               {/* Action Buttons */}
-              <div className="flex gap-2 flex-wrap">
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={() => handleExecuteNow(item)}
-                  disabled={!item.is_active}
-                  icon={<Zap className="w-3.5 h-3.5" />}
-                >
-                  Execute Now
-                </Button>
+              <div className="flex gap-2 flex-wrap items-center">
+                {item.amount_mode === "VARIABLE" ? (
+                  <>
+                    <input
+                      type="number"
+                      placeholder={item.amount > 0 ? `Est. ${item.amount.toFixed(0)}` : "Amount"}
+                      value={variableAmounts[item.id] || ""}
+                      onChange={(e) =>
+                        setVariableAmounts((prev) => ({
+                          ...prev,
+                          [item.id]: e.target.value,
+                        }))
+                      }
+                      className="w-28 text-sm px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-accent-500 focus:border-accent-500"
+                    />
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={() => handleConfirmVariable(item)}
+                      disabled={!item.is_active || !variableAmounts[item.id]}
+                      icon={<Zap className="w-3.5 h-3.5" />}
+                    >
+                      Confirm & Pay
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => handleExecuteNow(item)}
+                    disabled={!item.is_active}
+                    icon={<Zap className="w-3.5 h-3.5" />}
+                  >
+                    Execute Now
+                  </Button>
+                )}
                 <Button
                   variant="secondary"
                   size="sm"
@@ -312,10 +431,63 @@ export default function RecurringTransactionList({
                   Delete
                 </Button>
               </div>
+
+              {/* Execution History */}
+              <ExecutionHistoryPanel recurringId={item.id} />
             </div>
           </div>
         );
       })}
+
+      {/* Pause Confirmation Modal */}
+      {pausingRecurringId !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-sm overflow-hidden">
+            <div className="p-4 flex items-center justify-between border-b border-gray-100 dark:border-gray-700">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                Pause Transaction
+              </h3>
+              <button
+                onClick={() => setPausingRecurringId(null)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              <p className="text-sm text-gray-600 dark:text-gray-300">
+                Are you sure you want to pause this transaction? It will not execute while paused.
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Auto-Resume Date (Optional)
+                </label>
+                <input
+                  type="date"
+                  min={new Date().toISOString().split("T")[0]}
+                  value={resumeDate}
+                  onChange={(e) => setResumeDate(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-accent-500 focus:border-accent-500"
+                />
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Leave empty to pause indefinitely.
+                </p>
+              </div>
+            </div>
+            <div className="p-4 bg-gray-50 dark:bg-gray-700/50 flex justify-end gap-3 border-t border-gray-100 dark:border-gray-700">
+              <Button
+                variant="secondary"
+                onClick={() => setPausingRecurringId(null)}
+              >
+                Cancel
+              </Button>
+              <Button variant="primary" onClick={handleConfirmPause}>
+                Confirm Pause
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

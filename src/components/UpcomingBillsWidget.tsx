@@ -9,6 +9,7 @@ import {
   ArrowPathIcon,
   ExclamationTriangleIcon,
 } from "@heroicons/react/24/outline";
+import type { WidgetDisplayMode } from "../types/dashboard";
 
 interface UpcomingBill {
   source: string; // "RECURRING" | "INSTALLMENT"
@@ -27,10 +28,12 @@ interface UpcomingBill {
 
 interface UpcomingBillsWidgetProps {
   onBillAction?: () => void;
+  displayMode?: WidgetDisplayMode;
 }
 
 export default function UpcomingBillsWidget({
   onBillAction,
+  displayMode = "expanded",
 }: UpcomingBillsWidgetProps) {
   const [bills, setBills] = useState<UpcomingBill[]>([]);
   const [loading, setLoading] = useState(true);
@@ -133,6 +136,52 @@ export default function UpcomingBillsWidget({
         </div>
         <div className="flex items-center justify-center py-8">
           <ArrowPathIcon className="h-5 w-5 animate-spin text-gray-400" />
+        </div>
+      </div>
+    );
+  }
+
+  // Compact mode: single summary row
+  if (displayMode === "compact") {
+    const overdueCount = bills.filter((b) => b.is_overdue).length;
+    const totalDue = bills.reduce((sum, b) => sum + b.amount, 0);
+    const nextBill = bills[0];
+
+    return (
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-4 mb-8">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <CalendarDaysIcon className="h-4 w-4 text-accent-500" />
+            <span className="text-sm font-semibold text-gray-900 dark:text-white">
+              Upcoming Bills
+            </span>
+            {bills.length > 0 && (
+              <span className="px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+                {bills.length}
+              </span>
+            )}
+            {overdueCount > 0 && (
+              <span className="px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400">
+                {overdueCount} overdue
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-3 text-sm">
+            {nextBill && (
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                Next: {nextBill.name}
+              </span>
+            )}
+            {bills.length > 0 && (
+              <span className="font-medium text-gray-900 dark:text-white">
+                Rs{" "}
+                {totalDue.toLocaleString("en-US", {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })}
+              </span>
+            )}
+          </div>
         </div>
       </div>
     );

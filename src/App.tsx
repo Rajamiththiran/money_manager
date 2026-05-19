@@ -168,6 +168,22 @@ function AppContent() {
     };
   }, []);
 
+  // Global Keyboard Shortcuts
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        setCurrentView("dashboard");
+        // Tiny timeout to ensure Dashboard and QuickAddBar are mounted if navigating from another view
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent("focus-quick-add"));
+        }, 50);
+      }
+    };
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, []);
+
   useEffect(() => {
     const handleNavigate = () => {
       setCurrentView("transactions");

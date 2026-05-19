@@ -17,4 +17,5 @@ pub struct UpcomingBill {
     pub is_overdue: bool,
     pub is_due_today: bool,
     pub installment_progress: Option<String>, // e.g. "3/12" for installments
+    pub amount_mode: String,                   // "FIXED" or "VARIABLE"
 }

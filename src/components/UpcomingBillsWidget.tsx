@@ -24,6 +24,7 @@ interface UpcomingBill {
   is_overdue: boolean;
   is_due_today: boolean;
   installment_progress: string | null;
+  amount_mode: string; // "FIXED" or "VARIABLE"
 }
 
 interface UpcomingBillsWidgetProps {
@@ -38,13 +39,15 @@ export default function UpcomingBillsWidget({
   const [bills, setBills] = useState<UpcomingBill[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [variableAmounts, setVariableAmounts] = useState<Record<string, string>>({});
 
   const loadBills = useCallback(async () => {
     try {
       const data = await invoke<UpcomingBill[]>("get_upcoming_bills", {
         daysAhead: 7,
       });
-      setBills(data);
+      // Only show expenses and installments in this widget
+      setBills(data.filter((b) => b.transaction_type === "EXPENSE" || b.source === "INSTALLMENT"));
     } catch (err) {
       console.error("Failed to load upcoming bills:", err);
     } finally {
@@ -85,6 +88,33 @@ export default function UpcomingBillsWidget({
       onBillAction?.();
     } catch (err) {
       console.error("Failed to pay bill:", err);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleConfirmVariable = async (bill: UpcomingBill) => {
+    const key = `${bill.source}-${bill.source_id}`;
+    const amountStr = variableAmounts[key];
+    const amount = parseFloat(amountStr || "0");
+    if (!amount || amount <= 0) return;
+
+    const actionKey = `pay-${key}`;
+    setActionLoading(actionKey);
+    try {
+      await invoke("confirm_variable_amount", {
+        recurringId: bill.source_id,
+        amount,
+      });
+      setVariableAmounts((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      await loadBills();
+      onBillAction?.();
+    } catch (err) {
+      console.error("Failed to confirm variable amount:", err);
     } finally {
       setActionLoading(null);
     }
@@ -286,13 +316,31 @@ export default function UpcomingBillsWidget({
                 {/* Right: Amount + Actions */}
                 <div className="flex items-center gap-3 flex-shrink-0 ml-3">
                   <div className="text-right">
-                    <p className="text-sm font-semibold text-gray-900 dark:text-white">
-                      Rs{" "}
-                      {bill.amount.toLocaleString("en-US", {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2,
-                      })}
-                    </p>
+                    {bill.amount_mode === "VARIABLE" ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-amber-500 font-medium">Var</span>
+                        <input
+                          type="number"
+                          placeholder={bill.amount > 0 ? bill.amount.toFixed(0) : "Amount"}
+                          value={variableAmounts[`${bill.source}-${bill.source_id}`] || ""}
+                          onChange={(e) =>
+                            setVariableAmounts((prev) => ({
+                              ...prev,
+                              [`${bill.source}-${bill.source_id}`]: e.target.value,
+                            }))
+                          }
+                          className="w-20 text-right text-sm px-2 py-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-1 focus:ring-accent-500 focus:border-accent-500"
+                        />
+                      </div>
+                    ) : (
+                      <p className="text-sm font-semibold text-gray-900 dark:text-white">
+                        Rs{" "}
+                        {bill.amount.toLocaleString("en-US", {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}
+                      </p>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-1.5">
@@ -312,19 +360,34 @@ export default function UpcomingBillsWidget({
                       </button>
                     )}
 
-                    {/* Pay Now button */}
-                    <button
-                      onClick={() => handlePay(bill)}
-                      disabled={isSkipping || isPaying}
-                      title="Pay now"
-                      className="p-1.5 rounded-lg text-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors disabled:opacity-50"
-                    >
-                      {isPaying ? (
-                        <ArrowPathIcon className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <BanknotesIcon className="h-4 w-4" />
-                      )}
-                    </button>
+                    {/* Pay / Confirm button */}
+                    {bill.amount_mode === "VARIABLE" ? (
+                      <button
+                        onClick={() => handleConfirmVariable(bill)}
+                        disabled={isSkipping || isPaying || !variableAmounts[`${bill.source}-${bill.source_id}`]}
+                        title="Confirm amount and pay"
+                        className="p-1.5 rounded-lg text-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors disabled:opacity-50"
+                      >
+                        {isPaying ? (
+                          <ArrowPathIcon className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <BanknotesIcon className="h-4 w-4" />
+                        )}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handlePay(bill)}
+                        disabled={isSkipping || isPaying}
+                        title="Pay now"
+                        className="p-1.5 rounded-lg text-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors disabled:opacity-50"
+                      >
+                        {isPaying ? (
+                          <ArrowPathIcon className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <BanknotesIcon className="h-4 w-4" />
+                        )}
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>

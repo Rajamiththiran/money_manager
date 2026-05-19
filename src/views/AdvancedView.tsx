@@ -29,6 +29,9 @@ const INITIAL_RECURRING: CreateRecurringTransactionInput = {
   interval_days: null,
   start_date: new Date().toISOString().split("T")[0],
   end_date: null,
+  amount_mode: "FIXED",
+  active_months: null,
+  auto_approve: false,
 };
 
 const INITIAL_INSTALLMENT: CreateInstallmentPlan = {
@@ -381,6 +384,158 @@ export default function AdvancedView() {
                     }
                     placeholder="e.g., Apartment rent payment"
                   />
+                </div>
+
+                {/* Amount Mode Toggle */}
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Amount Mode
+                  </label>
+                  <div className="flex gap-2">
+                    {(["FIXED", "VARIABLE"] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() =>
+                          updateR({
+                            amount_mode: mode,
+                            // Force manual approval when switching to VARIABLE
+                            ...(mode === "VARIABLE" ? { auto_approve: false } : {}),
+                          })
+                        }
+                        className={`px-4 py-2 text-sm font-medium rounded-lg border transition-colors ${
+                          recurringForm.amount_mode === mode
+                            ? "bg-accent-50 dark:bg-accent-900/20 border-accent-300 dark:border-accent-700 text-accent-700 dark:text-accent-300"
+                            : "bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700"
+                        }`}
+                      >
+                        {mode === "FIXED" ? "Fixed Amount" : "Variable (confirm each time)"}
+                      </button>
+                    ))}
+                  </div>
+                  {recurringForm.amount_mode === "VARIABLE" && (
+                    <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                      You will be prompted to enter the exact amount before each payment.
+                    </p>
+                  )}
+                </div>
+
+                {/* Execution Method Radio */}
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Execution Method
+                  </label>
+                  <div className="flex gap-3">
+                    <label
+                      className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border cursor-pointer transition-colors ${
+                        recurringForm.auto_approve
+                          ? "bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600"
+                          : "bg-accent-50 dark:bg-accent-900/20 border-accent-300 dark:border-accent-700"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="auto_approve"
+                        checked={!recurringForm.auto_approve}
+                        onChange={() => updateR({ auto_approve: false })}
+                        className="accent-accent-600"
+                      />
+                      <div>
+                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                          Manual (Ask permission)
+                        </span>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                          Shows in dashboard for your approval
+                        </p>
+                      </div>
+                    </label>
+                    <label
+                      className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border transition-colors ${
+                        recurringForm.amount_mode === "VARIABLE"
+                          ? "opacity-40 cursor-not-allowed bg-gray-100 dark:bg-gray-700 border-gray-300 dark:border-gray-600"
+                          : recurringForm.auto_approve
+                            ? "bg-accent-50 dark:bg-accent-900/20 border-accent-300 dark:border-accent-700 cursor-pointer"
+                            : "bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 cursor-pointer"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="auto_approve"
+                        checked={recurringForm.auto_approve === true}
+                        disabled={recurringForm.amount_mode === "VARIABLE"}
+                        onChange={() => updateR({ auto_approve: true })}
+                        className="accent-accent-600"
+                      />
+                      <div>
+                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                          Automatic
+                        </span>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                          Executes silently on the due date
+                        </p>
+                      </div>
+                    </label>
+                  </div>
+                  {recurringForm.amount_mode === "VARIABLE" && (
+                    <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      Automatic execution is disabled for variable amounts.
+                    </p>
+                  )}
+                </div>
+
+                {/* Seasonal Months Selector */}
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Active Months (optional — leave empty for all year)
+                  </label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+                    ].map((month, idx) => {
+                      const monthNum = idx + 1;
+                      const activeList = recurringForm.active_months
+                        ? recurringForm.active_months.split(",").map(Number)
+                        : [];
+                      const isActive =
+                        !recurringForm.active_months || activeList.includes(monthNum);
+
+                      const toggleMonth = () => {
+                        let current = recurringForm.active_months
+                          ? recurringForm.active_months.split(",").map(Number)
+                          : Array.from({ length: 12 }, (_, i) => i + 1);
+
+                        if (isActive) {
+                          current = current.filter((m) => m !== monthNum);
+                        } else {
+                          current.push(monthNum);
+                          current.sort((a, b) => a - b);
+                        }
+
+                        updateR({
+                          active_months:
+                            current.length === 12 || current.length === 0
+                              ? null
+                              : current.join(","),
+                        });
+                      };
+
+                      return (
+                        <button
+                          key={monthNum}
+                          type="button"
+                          onClick={toggleMonth}
+                          className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors ${
+                            isActive
+                              ? "bg-accent-50 dark:bg-accent-900/20 border-accent-300 dark:border-accent-700 text-accent-700 dark:text-accent-300"
+                              : "bg-gray-100 dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-400 dark:text-gray-500"
+                          }`}
+                        >
+                          {month}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
               <div className="flex justify-end mt-5">

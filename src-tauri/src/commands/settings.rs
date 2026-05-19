@@ -4,6 +4,50 @@ use rusqlite::params;
 use serde::Serialize;
 use tauri::State;
 
+// ======================== APP SETTINGS ========================
+
+/// Read a single setting value by key from the app_settings table.
+/// Returns None if the key doesn't exist.
+#[tauri::command]
+pub fn get_setting(
+    state: State<'_, AppState>,
+    key: String,
+) -> Result<Option<String>, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let result: Option<String> = conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+        .ok();
+
+    Ok(result)
+}
+
+/// Write a setting value by key to the app_settings table.
+/// Creates the key if it doesn't exist, updates it if it does.
+#[tauri::command]
+pub fn set_setting(
+    state: State<'_, AppState>,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    conn.execute(
+        "INSERT INTO app_settings (key, value, updated_at) VALUES (?1, ?2, datetime('now'))
+         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')",
+        params![key, value],
+    )
+    .map_err(|e| format!("Failed to save setting '{}': {}", key, e))?;
+
+    Ok(())
+}
+
 // ======================== RESTORE FROM BACKUP ========================
 
 /// Restore the entire database from a JSON backup file content.

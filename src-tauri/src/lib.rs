@@ -179,6 +179,8 @@ pub fn run() {
             commands::currencies::get_exchange_rate_summaries,
             commands::currencies::convert_balances_to_primary,
             // Settings commands
+            commands::settings::get_setting,
+            commands::settings::set_setting,
             commands::settings::restore_from_backup,
             commands::settings::clear_all_data,
             // Scheduled Backup commands

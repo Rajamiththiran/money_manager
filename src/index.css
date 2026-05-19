@@ -141,3 +141,12 @@ html.font-size-medium {
 html.font-size-large {
   font-size: 18px;
 }
+
+/* ── Drag-and-drop ─────────────────────────────────────────────── */
+
+[data-dnd-sortable-dragging] {
+  z-index: 50;
+  box-shadow: 0 8px 25px -5px rgb(0 0 0 / 0.15), 0 4px 10px -5px rgb(0 0 0 / 0.1);
+  border-radius: 0.75rem;
+}
+

@@ -12,6 +12,7 @@ import {
   ArrowPathIcon,
   ExclamationTriangleIcon,
 } from "@heroicons/react/24/outline";
+import GoalIcon from "./GoalIconMap";
 
 interface GoalProgress {
   current_amount: number;
@@ -45,18 +46,7 @@ interface GoalCardProps {
   onRefresh: () => void;
 }
 
-const ICON_MAP: Record<string, string> = {
-  target: "🎯",
-  vacation: "✈️",
-  car: "🚗",
-  home: "🏠",
-  education: "🎓",
-  emergency: "🛡️",
-  gift: "🎁",
-  heart: "❤️",
-  star: "⭐",
-  piggy: "🐷",
-};
+
 
 export default function GoalCard({
   goal,
@@ -84,7 +74,7 @@ export default function GoalCard({
   };
 
   const { progress } = goal;
-  const iconEmoji = ICON_MAP[goal.icon] || "🎯";
+
   const isCompleted = goal.status === "COMPLETED";
   const isPaused = goal.status === "PAUSED";
   const isArchived = goal.status === "ARCHIVED";
@@ -102,7 +92,9 @@ export default function GoalCard({
         {/* Header */}
         <div className="flex items-start justify-between mb-4">
           <div className="flex items-center gap-3">
-            <span className="text-2xl">{iconEmoji}</span>
+            <div className="w-9 h-9 rounded-lg flex items-center justify-center bg-gray-100 dark:bg-gray-700">
+              <GoalIcon icon={goal.icon} color={goal.color} className="h-5 w-5" />
+            </div>
             <div>
               <h3 className="font-semibold text-gray-900 dark:text-white">
                 {goal.name}

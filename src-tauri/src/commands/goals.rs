@@ -180,6 +180,8 @@ pub fn delete_goal(
     if rows_affected == 0 {
         return Err("Goal not found".to_string());
     }
+    // Note: goal_contributions are cascade-deleted, which naturally releases
+    // the allocated amount back to the linked account's unallocated balance.
     Ok(())
 }
 
@@ -199,16 +201,35 @@ pub fn add_goal_contribution(
         return Err(format!("Cannot add contributions to a {} goal", goal.status.to_lowercase()));
     }
 
+    let contribution_type = input.contribution_type.unwrap_or_else(|| "MANUAL".to_string());
+
+    // Validate contribution_type
+    if !["MANUAL", "TRANSACTION", "WITHDRAWAL"].contains(&contribution_type.as_str()) {
+        return Err(format!("Invalid contribution type: {}", contribution_type));
+    }
+
+    // For MANUAL contributions on linked-account goals, validate against unallocated balance
+    if contribution_type == "MANUAL" && goal.linked_account_id.is_some() && input.amount > 0.0 {
+        let account_id = goal.linked_account_id.unwrap();
+        let unallocated = calculate_unallocated_balance(&conn, account_id)?;
+        if input.amount > unallocated {
+            return Err(format!(
+                "Contribution amount ({:.2}) exceeds unallocated balance ({:.2})",
+                input.amount, unallocated
+            ));
+        }
+    }
+
     conn.execute(
-        "INSERT INTO goal_contributions (goal_id, amount, contribution_date, note)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![input.goal_id, input.amount, input.date, input.note],
+        "INSERT INTO goal_contributions (goal_id, amount, contribution_date, note, transaction_id, contribution_type)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![input.goal_id, input.amount, input.date, input.note, input.transaction_id, contribution_type],
     ).map_err(|e| format!("Failed to add contribution: {}", e))?;
 
     let contribution_id = conn.last_insert_rowid();
 
     let mut stmt = conn.prepare(
-        "SELECT id, goal_id, amount, contribution_date, note, created_at
+        "SELECT id, goal_id, amount, contribution_date, note, transaction_id, contribution_type, created_at
          FROM goal_contributions WHERE id = ?1",
     ).unwrap();
 
@@ -219,9 +240,170 @@ pub fn add_goal_contribution(
             amount: row.get(2)?,
             contribution_date: row.get(3)?,
             note: row.get(4)?,
-            created_at: row.get(5)?,
+            transaction_id: row.get(5)?,
+            contribution_type: row.get(6)?,
+            created_at: row.get(7)?,
         })
     }).map_err(|e| format!("Failed to fetch contribution: {}", e))
+}
+
+// ======================== VIRTUAL ENVELOPE COMMANDS ========================
+
+#[tauri::command]
+pub fn get_unallocated_balance(
+    state: State<'_, AppState>,
+    account_id: i64,
+) -> Result<f64, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    calculate_unallocated_balance(&conn, account_id)
+}
+
+#[tauri::command]
+pub fn get_account_goal_summary(
+    state: State<'_, AppState>,
+    account_id: i64,
+) -> Result<AccountUnallocatedBalance, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    // Get account balance
+    let total_balance: f64 = conn.query_row(
+        "SELECT a.initial_balance +
+                COALESCE((SELECT SUM(je.debit - je.credit) FROM journal_entries je
+                          WHERE je.account_id = a.id), 0.0) as balance
+         FROM accounts a WHERE a.id = ?1",
+        params![account_id],
+        |row| row.get(0),
+    ).map_err(|_| "Account not found".to_string())?;
+
+    // Get per-goal allocation summaries
+    let mut stmt = conn.prepare(
+        "SELECT sg.id, sg.name, sg.color, sg.target_amount,
+                COALESCE(SUM(gc.amount), 0.0) as allocated
+         FROM savings_goals sg
+         LEFT JOIN goal_contributions gc ON gc.goal_id = sg.id
+         WHERE sg.linked_account_id = ?1 AND sg.status IN ('ACTIVE', 'PAUSED')
+         GROUP BY sg.id
+         ORDER BY sg.name",
+    ).map_err(|e| format!("Query error: {}", e))?;
+
+    let goals: Vec<GoalAllocationSummary> = stmt.query_map(params![account_id], |row| {
+        Ok(GoalAllocationSummary {
+            goal_id: row.get(0)?,
+            goal_name: row.get(1)?,
+            color: row.get(2)?,
+            target_amount: row.get(3)?,
+            allocated_amount: row.get(4)?,
+        })
+    }).map_err(|e| format!("Failed to query goals: {}", e))?
+    .filter_map(Result::ok)
+    .collect();
+
+    let allocated_balance: f64 = goals.iter().map(|g| g.allocated_amount).sum();
+    let unallocated_balance = ((total_balance - allocated_balance) * 100.0).round() / 100.0;
+
+    Ok(AccountUnallocatedBalance {
+        account_id,
+        total_balance: (total_balance * 100.0).round() / 100.0,
+        allocated_balance: (allocated_balance * 100.0).round() / 100.0,
+        unallocated_balance,
+        goals,
+    })
+}
+
+#[tauri::command]
+pub fn allocate_to_goal(
+    state: State<'_, AppState>,
+    goal_id: i64,
+    amount: f64,
+    transaction_id: Option<i64>,
+    note: Option<String>,
+) -> Result<GoalContribution, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    if amount <= 0.0 {
+        return Err("Allocation amount must be positive".to_string());
+    }
+
+    let goal = get_goal_by_id(&conn, goal_id)?;
+    if goal.status != "ACTIVE" {
+        return Err(format!("Cannot allocate to a {} goal", goal.status.to_lowercase()));
+    }
+
+    // Validate goal has a linked account
+    let account_id = goal.linked_account_id
+        .ok_or("Cannot allocate to a goal without a linked account")?;
+
+    // Check unallocated balance
+    let unallocated = calculate_unallocated_balance(&conn, account_id)?;
+    if amount > unallocated {
+        return Err(format!(
+            "Allocation amount ({:.2}) exceeds unallocated balance ({:.2})",
+            amount, unallocated
+        ));
+    }
+
+    let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+    conn.execute(
+        "INSERT INTO goal_contributions (goal_id, amount, contribution_date, note, transaction_id, contribution_type)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'TRANSACTION')",
+        params![goal_id, amount, date, note, transaction_id],
+    ).map_err(|e| format!("Failed to allocate: {}", e))?;
+
+    let contribution_id = conn.last_insert_rowid();
+    fetch_contribution(&conn, contribution_id)
+}
+
+#[tauri::command]
+pub fn withdraw_from_goal(
+    state: State<'_, AppState>,
+    goal_id: i64,
+    amount: f64,
+    transaction_id: Option<i64>,
+    note: Option<String>,
+) -> Result<GoalContribution, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    if amount <= 0.0 {
+        return Err("Withdrawal amount must be positive".to_string());
+    }
+
+    let goal = get_goal_by_id(&conn, goal_id)?;
+
+    // Validate goal has a linked account
+    goal.linked_account_id
+        .ok_or("Cannot withdraw from a goal without a linked account")?;
+
+    // Check that the goal has enough allocated balance
+    let goal_allocated: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(amount), 0.0) FROM goal_contributions WHERE goal_id = ?1",
+        params![goal_id],
+        |row| row.get(0),
+    ).unwrap_or(0.0);
+
+    if amount > goal_allocated {
+        return Err(format!(
+            "Withdrawal amount ({:.2}) exceeds goal's allocated balance ({:.2})",
+            amount, goal_allocated
+        ));
+    }
+
+    let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+    // Withdrawals are stored as negative amounts
+    conn.execute(
+        "INSERT INTO goal_contributions (goal_id, amount, contribution_date, note, transaction_id, contribution_type)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'WITHDRAWAL')",
+        params![goal_id, -amount, date, note, transaction_id],
+    ).map_err(|e| format!("Failed to withdraw: {}", e))?;
+
+    let contribution_id = conn.last_insert_rowid();
+    fetch_contribution(&conn, contribution_id)
 }
 
 // ======================== LIFECYCLE ========================
@@ -306,6 +488,51 @@ fn get_goal_by_id(conn: &rusqlite::Connection, goal_id: i64) -> Result<SavingsGo
          FROM savings_goals WHERE id = ?1",
     ).unwrap();
     stmt.query_row(params![goal_id], row_to_goal).map_err(|_| "Goal not found".to_string())
+}
+
+fn fetch_contribution(conn: &rusqlite::Connection, contribution_id: i64) -> Result<GoalContribution, String> {
+    let mut stmt = conn.prepare(
+        "SELECT id, goal_id, amount, contribution_date, note, transaction_id, contribution_type, created_at
+         FROM goal_contributions WHERE id = ?1",
+    ).unwrap();
+    stmt.query_row(params![contribution_id], |row| {
+        Ok(GoalContribution {
+            id: row.get(0)?,
+            goal_id: row.get(1)?,
+            amount: row.get(2)?,
+            contribution_date: row.get(3)?,
+            note: row.get(4)?,
+            transaction_id: row.get(5)?,
+            contribution_type: row.get(6)?,
+            created_at: row.get(7)?,
+        })
+    }).map_err(|e| format!("Failed to fetch contribution: {}", e))
+}
+
+/// Calculate the unallocated balance for an account.
+/// unallocated = account_balance - SUM(all goal contributions for goals linked to this account)
+fn calculate_unallocated_balance(conn: &rusqlite::Connection, account_id: i64) -> Result<f64, String> {
+    // Get account balance
+    let total_balance: f64 = conn.query_row(
+        "SELECT a.initial_balance +
+                COALESCE((SELECT SUM(je.debit - je.credit) FROM journal_entries je
+                          WHERE je.account_id = a.id), 0.0) as balance
+         FROM accounts a WHERE a.id = ?1",
+        params![account_id],
+        |row| row.get(0),
+    ).map_err(|_| "Account not found".to_string())?;
+
+    // Get total allocated across all goals linked to this account
+    let total_allocated: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(gc.amount), 0.0)
+         FROM goal_contributions gc
+         INNER JOIN savings_goals sg ON gc.goal_id = sg.id
+         WHERE sg.linked_account_id = ?1",
+        params![account_id],
+        |row| row.get(0),
+    ).unwrap_or(0.0);
+
+    Ok(((total_balance - total_allocated) * 100.0).round() / 100.0)
 }
 
 fn calculate_progress(conn: &rusqlite::Connection, goal: &SavingsGoal) -> Result<GoalProgress, String> {

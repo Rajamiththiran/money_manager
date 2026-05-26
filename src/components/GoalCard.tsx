@@ -44,6 +44,7 @@ interface GoalCardProps {
   onEdit: (goal: GoalWithProgress) => void;
   onAddContribution: (goal: GoalWithProgress) => void;
   onRefresh: () => void;
+  unallocatedBalance?: number;
 }
 
 
@@ -53,6 +54,7 @@ export default function GoalCard({
   onEdit,
   onAddContribution,
   onRefresh,
+  unallocatedBalance,
 }: GoalCardProps) {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
@@ -213,15 +215,32 @@ export default function GoalCard({
 
         {/* Linked account reference balance */}
         {goal.linked_account_name && goal.linked_account_balance !== null && (
-          <div className="flex items-center justify-between px-3 py-2 mb-3 rounded-lg bg-gray-50 dark:bg-gray-700/50 text-xs">
-            <span className="text-gray-500 dark:text-gray-400">
-              {goal.linked_account_name} balance
-            </span>
-            <span className="font-medium text-gray-700 dark:text-gray-300">
-              Rs {goal.linked_account_balance.toLocaleString("en-US", {
-                minimumFractionDigits: 2, maximumFractionDigits: 2,
-              })}
-            </span>
+          <div className="mb-3 rounded-lg bg-gray-50 dark:bg-gray-700/50 overflow-hidden">
+            <div className="flex items-center justify-between px-3 py-2 text-xs">
+              <span className="text-gray-500 dark:text-gray-400">
+                {goal.linked_account_name} balance
+              </span>
+              <span className="font-medium text-gray-700 dark:text-gray-300">
+                Rs {goal.linked_account_balance.toLocaleString("en-US", {
+                  minimumFractionDigits: 2, maximumFractionDigits: 2,
+                })}
+              </span>
+            </div>
+            {unallocatedBalance !== undefined && (
+              <div className="flex items-center justify-between px-3 py-1.5 border-t border-gray-100 dark:border-gray-600 text-xs">
+                <span className="flex items-center gap-1 text-gray-400 dark:text-gray-500">
+                  <svg className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M2.5 4A1.5 1.5 0 001 5.5V6h18v-.5A1.5 1.5 0 0017.5 4h-15zM19 8H1v6.5A1.5 1.5 0 002.5 16h15a1.5 1.5 0 001.5-1.5V8z" />
+                  </svg>
+                  Unallocated
+                </span>
+                <span className={`font-medium ${unallocatedBalance >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>
+                  Rs {unallocatedBalance.toLocaleString("en-US", {
+                    minimumFractionDigits: 2, maximumFractionDigits: 2,
+                  })}
+                </span>
+              </div>
+            )}
           </div>
         )}
 

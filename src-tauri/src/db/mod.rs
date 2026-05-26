@@ -166,6 +166,10 @@ fn run_migrations(conn: &Connection) -> Result<()> {
             "20240216000001_recurring_approval_mode",
             include_str!("../../migrations/20240216000001_recurring_approval_mode.sql"),
         ),
+        (
+            "20240217000001_goal_allocations",
+            include_str!("../../migrations/20240217000001_goal_allocations.sql"),
+        ),
     ];
 
     for (name, sql) in &migrations {

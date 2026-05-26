@@ -209,6 +209,11 @@ pub fn run() {
             commands::goals::pause_goal,
             commands::goals::resume_goal,
             commands::goals::archive_goal,
+            // Goals — Virtual Envelope commands
+            commands::goals::get_unallocated_balance,
+            commands::goals::get_account_goal_summary,
+            commands::goals::allocate_to_goal,
+            commands::goals::withdraw_from_goal,
             // Tag commands
             commands::tags::create_tag,
             commands::tags::get_tags,

@@ -504,6 +504,8 @@ pub fn execute_recurring_transaction(
         category_id,
         memo: Some("Auto-generated from recurring transaction".to_string()),
         tag_ids: None,
+        goal_allocations: None,
+        goal_withdrawals: None,
     };
 
     // Need to release lock before calling create_transaction
@@ -663,6 +665,8 @@ pub fn process_recurring_transactions(
             category_id,
             memo: Some("Auto-generated from recurring transaction".to_string()),
             tag_ids: None,
+            goal_allocations: None,
+            goal_withdrawals: None,
         };
 
         match crate::commands::transactions::create_transaction(state.clone(), transaction_input) {
@@ -841,6 +845,8 @@ pub fn confirm_variable_amount(
         category_id,
         memo: Some(format!("Variable recurring — confirmed amount: {:.2}", amount)),
         tag_ids: None,
+        goal_allocations: None,
+        goal_withdrawals: None,
     };
 
     drop(conn);
@@ -996,6 +1002,8 @@ pub fn process_auto_approvals(pool: &std::sync::Mutex<rusqlite::Connection>) -> 
             category_id,
             memo: Some("Auto-executed from recurring transaction".to_string()),
             tag_ids: None,
+            goal_allocations: None,
+            goal_withdrawals: None,
         };
 
         // Insert transaction directly using pool

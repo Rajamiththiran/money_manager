@@ -1,5 +1,5 @@
 // File: src/components/GoalContributionModal.tsx
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { XMarkIcon } from "@heroicons/react/24/outline";
 
@@ -10,6 +10,7 @@ interface GoalContributionModalProps {
   goalId: number;
   goalName: string;
   goalColor: string;
+  linkedAccountId?: number | null;
 }
 
 export default function GoalContributionModal({
@@ -19,12 +20,25 @@ export default function GoalContributionModal({
   goalId,
   goalName,
   goalColor,
+  linkedAccountId,
 }: GoalContributionModalProps) {
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [unallocatedBalance, setUnallocatedBalance] = useState<number | null>(null);
+
+  // Fetch unallocated balance for linked-account goals
+  useEffect(() => {
+    if (isOpen && linkedAccountId) {
+      invoke<number>("get_unallocated_balance", { accountId: linkedAccountId })
+        .then(setUnallocatedBalance)
+        .catch(() => setUnallocatedBalance(null));
+    } else {
+      setUnallocatedBalance(null);
+    }
+  }, [isOpen, linkedAccountId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -36,6 +50,19 @@ export default function GoalContributionModal({
       return;
     }
 
+    // Validate against unallocated balance for linked-account goals
+    if (
+      linkedAccountId &&
+      parsedAmount > 0 &&
+      unallocatedBalance !== null &&
+      parsedAmount > unallocatedBalance
+    ) {
+      setError(
+        `Amount exceeds unallocated balance (Rs ${unallocatedBalance.toFixed(2)})`
+      );
+      return;
+    }
+
     setSaving(true);
     try {
       await invoke("add_goal_contribution", {
@@ -44,6 +71,7 @@ export default function GoalContributionModal({
           amount: parsedAmount,
           date,
           note: note.trim() || null,
+          contribution_type: "MANUAL",
         },
       });
       setAmount("");
@@ -87,6 +115,21 @@ export default function GoalContributionModal({
           {error && (
             <div className="p-3 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-sm">
               {error}
+            </div>
+          )}
+
+          {/* Unallocated balance indicator for linked-account goals */}
+          {linkedAccountId && unallocatedBalance !== null && (
+            <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-accent-50 dark:bg-accent-900/20 text-xs">
+              <span className="flex items-center gap-1.5 text-accent-700 dark:text-accent-300">
+                <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+                  <path d="M2.5 4A1.5 1.5 0 001 5.5V6h18v-.5A1.5 1.5 0 0017.5 4h-15zM19 8H1v6.5A1.5 1.5 0 002.5 16h15a1.5 1.5 0 001.5-1.5V8z" />
+                </svg>
+                Available (unallocated)
+              </span>
+              <span className="font-semibold text-accent-600 dark:text-accent-400">
+                Rs {unallocatedBalance.toFixed(2)}
+              </span>
             </div>
           )}
 

@@ -1,4 +1,5 @@
 // File: src-tauri/src/models/transactions.rs
+use crate::models::goal::{GoalAllocationInput, GoalWithdrawalInput};
 use crate::models::tag::TagInfo;
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +27,8 @@ pub struct CreateTransactionInput {
     pub category_id: Option<i64>,
     pub memo: Option<String>,
     pub tag_ids: Option<Vec<i64>>,
+    pub goal_allocations: Option<Vec<GoalAllocationInput>>,   // For INCOME → allocate to goals
+    pub goal_withdrawals: Option<Vec<GoalWithdrawalInput>>,   // For EXPENSE → reduce goals
 }
 
 #[derive(Debug, Deserialize)]

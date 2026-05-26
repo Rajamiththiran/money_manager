@@ -232,6 +232,37 @@ pub fn create_transaction(
         }
     }
 
+    // Validate goal allocations (INCOME)
+    if let Some(ref allocations) = input.goal_allocations {
+        if input.transaction_type != "INCOME" {
+            return Err("Goal allocations are only allowed for INCOME transactions".to_string());
+        }
+        let total_alloc: f64 = allocations.iter().map(|a| a.amount).sum();
+        if total_alloc > input.amount {
+            return Err(format!(
+                "Total goal allocations ({:.2}) exceed transaction amount ({:.2})",
+                total_alloc, input.amount
+            ));
+        }
+        for alloc in allocations {
+            if alloc.amount <= 0.0 {
+                return Err("Each goal allocation amount must be positive".to_string());
+            }
+        }
+    }
+
+    // Validate goal withdrawals (EXPENSE)
+    if let Some(ref withdrawals) = input.goal_withdrawals {
+        if input.transaction_type != "EXPENSE" {
+            return Err("Goal withdrawals are only allowed for EXPENSE transactions".to_string());
+        }
+        for w in withdrawals {
+            if w.amount <= 0.0 {
+                return Err("Each goal withdrawal amount must be positive".to_string());
+            }
+        }
+    }
+
     // Start transaction
     let tx = conn
         .transaction()
@@ -302,6 +333,81 @@ pub fn create_transaction(
                 )
                 .map_err(|e| format!("Failed to associate tag: {}", e))?;
             }
+        }
+    }
+
+    // Handle goal allocations (INCOME → contribute to goals)
+    if let Some(allocations) = &input.goal_allocations {
+        for alloc in allocations {
+            // Validate goal exists, is ACTIVE, and is linked to this account
+            let goal_check: Result<(String, Option<i64>), _> = tx.query_row(
+                "SELECT status, linked_account_id FROM savings_goals WHERE id = ?1",
+                params![alloc.goal_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            );
+
+            match goal_check {
+                Ok((status, linked_account_id)) => {
+                    if status != "ACTIVE" {
+                        return Err(format!("Goal {} is not active", alloc.goal_id));
+                    }
+                    if linked_account_id != Some(input.account_id) {
+                        return Err(format!(
+                            "Goal {} is not linked to account {}",
+                            alloc.goal_id, input.account_id
+                        ));
+                    }
+                }
+                Err(_) => return Err(format!("Goal {} not found", alloc.goal_id)),
+            }
+
+            tx.execute(
+                "INSERT INTO goal_contributions (goal_id, amount, contribution_date, note, transaction_id, contribution_type)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'TRANSACTION')",
+                params![
+                    alloc.goal_id,
+                    alloc.amount,
+                    input.date,
+                    format!("Auto-allocated from income transaction"),
+                    transaction_id
+                ],
+            )
+            .map_err(|e| format!("Failed to allocate to goal: {}", e))?;
+        }
+    }
+
+    // Handle goal withdrawals (EXPENSE → reduce goals)
+    if let Some(withdrawals) = &input.goal_withdrawals {
+        for w in withdrawals {
+            // Validate goal exists and has sufficient allocated balance
+            let goal_allocated: f64 = tx.query_row(
+                "SELECT COALESCE(SUM(gc.amount), 0.0)
+                 FROM goal_contributions gc
+                 WHERE gc.goal_id = ?1",
+                params![w.goal_id],
+                |row| row.get(0),
+            ).unwrap_or(0.0);
+
+            if w.amount > goal_allocated {
+                return Err(format!(
+                    "Withdrawal amount ({:.2}) exceeds goal's allocated balance ({:.2})",
+                    w.amount, goal_allocated
+                ));
+            }
+
+            // Withdrawals are stored as negative amounts
+            tx.execute(
+                "INSERT INTO goal_contributions (goal_id, amount, contribution_date, note, transaction_id, contribution_type)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'WITHDRAWAL')",
+                params![
+                    w.goal_id,
+                    -w.amount,
+                    input.date,
+                    format!("Reduced due to expense transaction"),
+                    transaction_id
+                ],
+            )
+            .map_err(|e| format!("Failed to withdraw from goal: {}", e))?;
         }
     }
 

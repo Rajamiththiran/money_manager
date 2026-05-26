@@ -14,6 +14,14 @@ import type {
   UpdateAccountInput,
 } from "../types/account";
 
+interface AccountGoalSummary {
+  account_id: number;
+  total_balance: number;
+  allocated_balance: number;
+  unallocated_balance: number;
+  goals: { goal_id: number; goal_name: string; allocated_amount: number; color: string; target_amount: number }[];
+}
+
 export default function AccountsView() {
   const [accountGroups, setAccountGroups] = useState<AccountGroup[]>([]);
   const [accounts, setAccounts] = useState<AccountWithBalance[]>([]);
@@ -21,6 +29,9 @@ export default function AccountsView() {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
+
+  // Virtual envelope state
+  const [goalSummaries, setGoalSummaries] = useState<Record<number, AccountGoalSummary>>({});
 
   // Edit modal state
   const [editingAccount, setEditingAccount] =
@@ -60,6 +71,24 @@ export default function AccountsView() {
       ]);
       setAccountGroups(groups);
       setAccounts(accts);
+
+      // Fetch goal summaries for all accounts (backend returns empty if no goals linked)
+      const summaries: Record<number, AccountGoalSummary> = {};
+      await Promise.all(
+        accts.map(async (acct) => {
+          try {
+            const summary = await invoke<AccountGoalSummary>("get_account_goal_summary", {
+              accountId: acct.id,
+            });
+            if (summary.goals.length > 0) {
+              summaries[acct.id] = summary;
+            }
+          } catch {
+            // Account has no linked goals, skip
+          }
+        }),
+      );
+      setGoalSummaries(summaries);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -265,20 +294,26 @@ export default function AccountsView() {
                   {group.name}
                 </h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {groupAccounts.map((account) => (
-                    <AccountCard
-                      key={account.id}
-                      id={account.id}
-                      name={account.name}
-                      groupName={getGroupName(account.group_id)}
-                      groupId={account.group_id}
-                      currentBalance={account.current_balance}
-                      initialBalance={account.initial_balance}
-                      currency={account.currency}
-                      onEdit={handleEditOpen}
-                      onDelete={handleDeleteRequest}
-                    />
-                  ))}
+                  {groupAccounts.map((account) => {
+                    const summary = goalSummaries[account.id];
+                    return (
+                      <AccountCard
+                        key={account.id}
+                        id={account.id}
+                        name={account.name}
+                        groupName={getGroupName(account.group_id)}
+                        groupId={account.group_id}
+                        currentBalance={account.current_balance}
+                        initialBalance={account.initial_balance}
+                        currency={account.currency}
+                        onEdit={handleEditOpen}
+                        onDelete={handleDeleteRequest}
+                        hasLinkedGoals={!!summary}
+                        allocatedBalance={summary?.allocated_balance}
+                        unallocatedBalance={summary?.unallocated_balance}
+                      />
+                    );
+                  })}
                 </div>
               </div>
             );

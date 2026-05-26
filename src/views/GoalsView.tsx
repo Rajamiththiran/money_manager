@@ -40,6 +40,8 @@ export default function GoalsView() {
   const [showForm, setShowForm] = useState(false);
   const [editGoal, setEditGoal] = useState<GoalWithProgress | null>(null);
   const [contributionGoal, setContributionGoal] = useState<GoalWithProgress | null>(null);
+  // Virtual envelope: unallocated balance per account
+  const [unallocatedBalances, setUnallocatedBalances] = useState<Record<number, number>>({});
 
   const loadGoals = useCallback(async () => {
     try {
@@ -48,6 +50,25 @@ export default function GoalsView() {
         statusFilter: filter,
       });
       setGoals(data);
+
+      // Fetch unallocated balances for linked accounts
+      const linkedAccountIds = [...new Set(
+        data
+          .filter((g) => g.linked_account_id !== null)
+          .map((g) => g.linked_account_id as number)
+      )];
+      const balances: Record<number, number> = {};
+      await Promise.all(
+        linkedAccountIds.map(async (accountId) => {
+          try {
+            const balance = await invoke<number>("get_unallocated_balance", { accountId });
+            balances[accountId] = balance;
+          } catch {
+            // Ignore errors
+          }
+        })
+      );
+      setUnallocatedBalances(balances);
     } catch (err) {
       console.error("Failed to load goals:", err);
     } finally {
@@ -207,6 +228,11 @@ export default function GoalsView() {
               onEdit={handleEdit}
               onAddContribution={handleAddContribution}
               onRefresh={loadGoals}
+              unallocatedBalance={
+                goal.linked_account_id !== null
+                  ? unallocatedBalances[goal.linked_account_id]
+                  : undefined
+              }
             />
           ))}
         </div>
@@ -228,6 +254,7 @@ export default function GoalsView() {
           goalId={contributionGoal.id}
           goalName={contributionGoal.name}
           goalColor={contributionGoal.color}
+          linkedAccountId={contributionGoal.linked_account_id}
         />
       )}
     </div>

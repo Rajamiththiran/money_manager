@@ -12,6 +12,10 @@ interface AccountCardProps {
   currency: string;
   onEdit: (id: number) => void;
   onDelete: (id: number) => void;
+  // Virtual Envelope props
+  hasLinkedGoals?: boolean;
+  unallocatedBalance?: number;
+  allocatedBalance?: number;
 }
 
 export default function AccountCard({
@@ -23,6 +27,9 @@ export default function AccountCard({
   currency,
   onEdit,
   onDelete,
+  hasLinkedGoals,
+  unallocatedBalance,
+  allocatedBalance,
 }: AccountCardProps) {
   const isPositive = currentBalance >= 0;
   const change = currentBalance - initialBalance;
@@ -82,6 +89,43 @@ export default function AccountCard({
           </p>
         )}
       </div>
+
+      {/* Virtual Envelope: Unallocated Balance */}
+      {hasLinkedGoals && unallocatedBalance !== undefined && allocatedBalance !== undefined && (
+        <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-700">
+          <div className="flex items-center gap-1.5 mb-2">
+            <svg className="h-3.5 w-3.5 text-accent-500" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M2.5 4A1.5 1.5 0 001 5.5V6h18v-.5A1.5 1.5 0 0017.5 4h-15zM19 8H1v6.5A1.5 1.5 0 002.5 16h15a1.5 1.5 0 001.5-1.5V8zM3 13.25a.75.75 0 01.75-.75h1.5a.75.75 0 010 1.5h-1.5a.75.75 0 01-.75-.75zm4.75-.75a.75.75 0 000 1.5h3.5a.75.75 0 000-1.5h-3.5z" />
+            </svg>
+            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+              Virtual Envelope
+            </span>
+          </div>
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                Allocated to goals
+              </span>
+              <span className="text-xs font-medium text-accent-600 dark:text-accent-400">
+                {allocatedBalance.toFixed(2)} {currency}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                Unallocated
+              </span>
+              <span
+                className={clsx("text-xs font-semibold", {
+                  "text-green-600 dark:text-green-400": unallocatedBalance >= 0,
+                  "text-red-600 dark:text-red-400": unallocatedBalance < 0,
+                })}
+              >
+                {unallocatedBalance.toFixed(2)} {currency}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

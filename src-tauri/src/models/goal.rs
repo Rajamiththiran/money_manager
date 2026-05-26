@@ -41,6 +41,8 @@ pub struct GoalContribution {
     pub amount: f64,
     pub contribution_date: String,
     pub note: Option<String>,
+    pub transaction_id: Option<i64>,
+    pub contribution_type: String, // MANUAL, TRANSACTION, WITHDRAWAL
     pub created_at: String,
 }
 
@@ -70,4 +72,38 @@ pub struct AddContributionInput {
     pub amount: f64,
     pub date: String,
     pub note: Option<String>,
+    pub transaction_id: Option<i64>,
+    pub contribution_type: Option<String>, // defaults to MANUAL
+}
+
+// ============ Virtual Envelope Structs ============
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GoalAllocationInput {
+    pub goal_id: i64,
+    pub amount: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GoalWithdrawalInput {
+    pub goal_id: i64,
+    pub amount: f64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct GoalAllocationSummary {
+    pub goal_id: i64,
+    pub goal_name: String,
+    pub allocated_amount: f64,
+    pub color: String,
+    pub target_amount: f64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct AccountUnallocatedBalance {
+    pub account_id: i64,
+    pub total_balance: f64,
+    pub allocated_balance: f64,
+    pub unallocated_balance: f64,
+    pub goals: Vec<GoalAllocationSummary>,
 }

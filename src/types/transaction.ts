@@ -21,6 +21,8 @@ export interface CreateTransactionInput {
   category_id: number | null;
   memo: string | null;
   tag_ids?: number[];
+  goal_allocations?: { goal_id: number; amount: number }[];
+  goal_withdrawals?: { goal_id: number; amount: number }[];
 }
 
 export interface UpdateTransactionInput {

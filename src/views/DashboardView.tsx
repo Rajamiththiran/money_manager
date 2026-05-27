@@ -1,5 +1,5 @@
 // File: src/views/DashboardView.tsx
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, lazy, Suspense } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   DndContext,
@@ -27,14 +27,17 @@ import {
   ChevronUpDownIcon,
 } from "@heroicons/react/24/outline";
 import StatCard from "../components/StatCard";
-import CategorySpendingChart from "../components/CategorySpendingChart";
-import Calendar from "../components/Calendar";
 import QuickAddBar from "../components/QuickAddBar";
-import NetWorthCard from "../components/NetWorthCard";
-import UpcomingBillsWidget from "../components/UpcomingBillsWidget";
-import ScheduledItemsWidget from "../components/ScheduledItemsWidget";
-import GoalsDashboardWidget from "../components/GoalsDashboardWidget";
 import { useDashboardLayout } from "../hooks/useDashboardLayout";
+
+// Lazy-loaded dashboard widgets for code-splitting & faster TTI
+const CategorySpendingChart = lazy(() => import("../components/CategorySpendingChart"));
+const Calendar = lazy(() => import("../components/Calendar"));
+const NetWorthCard = lazy(() => import("../components/NetWorthCard"));
+const UpcomingBillsWidget = lazy(() => import("../components/UpcomingBillsWidget"));
+const ScheduledItemsWidget = lazy(() => import("../components/ScheduledItemsWidget"));
+const GoalsDashboardWidget = lazy(() => import("../components/GoalsDashboardWidget"));
+
 import type { AccountWithBalance } from "../types/account";
 import type { TransactionWithDetails } from "../types/transaction";
 import type { WidgetId, DateRangePreset } from "../types/dashboard";
@@ -50,6 +53,20 @@ interface IncomeExpenseSummary {
 }
 
 type ComparisonMode = "month" | "year" | "quarter";
+
+// Skeleton placeholder for lazy-loaded widgets
+function WidgetSkeleton() {
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8 mb-8 animate-pulse">
+      <div className="h-5 w-40 bg-gray-200 dark:bg-gray-700 rounded mb-6" />
+      <div className="space-y-3">
+        <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-full" />
+        <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-3/4" />
+        <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-5/6" />
+      </div>
+    </div>
+  );
+}
 
 // ── Sortable widget wrapper ──────────────────────────────────────
 function SortableWidget({
@@ -276,23 +293,35 @@ export default function DashboardView() {
 
     switch (id) {
       case "net-worth":
-        return <NetWorthCard displayMode={config.displayMode} />;
+        return (
+          <Suspense fallback={<WidgetSkeleton />}>
+            <NetWorthCard displayMode={config.displayMode} />
+          </Suspense>
+        );
       case "upcoming-bills":
         return (
-          <UpcomingBillsWidget
-            onBillAction={handleTransactionAdded}
-            displayMode={config.displayMode}
-          />
+          <Suspense fallback={<WidgetSkeleton />}>
+            <UpcomingBillsWidget
+              onBillAction={handleTransactionAdded}
+              displayMode={config.displayMode}
+            />
+          </Suspense>
         );
       case "scheduled-items":
         return (
-          <ScheduledItemsWidget
-            onItemAction={handleTransactionAdded}
-            displayMode={config.displayMode}
-          />
+          <Suspense fallback={<WidgetSkeleton />}>
+            <ScheduledItemsWidget
+              onItemAction={handleTransactionAdded}
+              displayMode={config.displayMode}
+            />
+          </Suspense>
         );
       case "goals":
-        return <GoalsDashboardWidget displayMode={config.displayMode} />;
+        return (
+          <Suspense fallback={<WidgetSkeleton />}>
+            <GoalsDashboardWidget displayMode={config.displayMode} />
+          </Suspense>
+        );
       case "stats-grid":
         return (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
@@ -331,7 +360,9 @@ export default function DashboardView() {
             <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">
               Spending by Category
             </h2>
-            <CategorySpendingChart startDate={dateRange.start} endDate={dateRange.end} transactionType="EXPENSE" />
+            <Suspense fallback={<WidgetSkeleton />}>
+              <CategorySpendingChart startDate={dateRange.start} endDate={dateRange.end} transactionType="EXPENSE" />
+            </Suspense>
           </div>
         );
       case "income-chart":
@@ -340,7 +371,9 @@ export default function DashboardView() {
             <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">
               Income Sources
             </h2>
-            <CategorySpendingChart startDate={dateRange.start} endDate={dateRange.end} transactionType="INCOME" />
+            <Suspense fallback={<WidgetSkeleton />}>
+              <CategorySpendingChart startDate={dateRange.start} endDate={dateRange.end} transactionType="INCOME" />
+            </Suspense>
           </div>
         );
       case "recent-transactions":
@@ -387,7 +420,9 @@ export default function DashboardView() {
       case "calendar":
         return (
           <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8 mb-8">
-            <Calendar />
+            <Suspense fallback={<WidgetSkeleton />}>
+              <Calendar />
+            </Suspense>
           </div>
         );
       default:

@@ -170,6 +170,10 @@ fn run_migrations(conn: &Connection) -> Result<()> {
             "20240217000001_goal_allocations",
             include_str!("../../migrations/20240217000001_goal_allocations.sql"),
         ),
+        (
+            "20240218000001_performance_indexes",
+            include_str!("../../migrations/20240218000001_performance_indexes.sql"),
+        ),
     ];
 
     for (name, sql) in &migrations {

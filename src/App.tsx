@@ -1,6 +1,7 @@
 // File: src/App.tsx
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { AccentColorProvider } from "./contexts/AccentColorContext";
 import { FontSizeProvider } from "./contexts/FontSizeContext";
@@ -207,6 +208,36 @@ function AppContent() {
     window.addEventListener("refresh-bills", handleRefreshBills);
     return () => window.removeEventListener("refresh-bills", handleRefreshBills);
   }, [refreshBillCount]);
+
+  // Listen for backend integrity check results (emitted on startup)
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    listen<{
+      total_issues: number;
+      imbalanced_count: number;
+      missing_entries_count: number;
+      orphaned_entries_count: number;
+    }>("integrity-check-result", (event) => {
+      const { total_issues } = event.payload;
+      if (total_issues > 0) {
+        // Dispatch a custom event that the toast system picks up
+        window.dispatchEvent(
+          new CustomEvent("integrity-warning", {
+            detail: {
+              message: `Data integrity check found ${total_issues} issue${total_issues !== 1 ? "s" : ""}. Review in Settings > Data Management.`,
+              action: () => setCurrentView("settings"),
+            },
+          })
+        );
+      }
+    }).then((fn) => {
+      unlisten = fn;
+    });
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   const handleUnlock = useCallback(() => {
     setIsLocked(false);

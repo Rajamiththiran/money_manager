@@ -6,7 +6,7 @@ mod models;
 use db::DbPool;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// Application state managed by Tauri.
 /// The database starts as `None` and is populated either immediately
@@ -48,8 +48,15 @@ pub fn run() {
             if encryption_config.is_none() || !encryption_config.as_ref().unwrap().encrypted {
                 match db::init_database_unencrypted(&db_path) {
                     Ok(pool) => {
-                        *app_state.db.lock().unwrap() = Some(pool);
+                        *app_state.db.lock().unwrap() = Some(pool.clone());
                         println!("Database initialized (unencrypted)");
+
+                        // Spawn background integrity check (incremental — only if >7 days since last check)
+                        let app_handle = app.handle().clone();
+                        let pool_clone = pool.clone();
+                        std::thread::spawn(move || {
+                            run_startup_integrity_check(app_handle, pool_clone);
+                        });
                     }
                     Err(e) => {
                         panic!("Failed to initialize database: {}", e);
@@ -186,6 +193,9 @@ pub fn run() {
             commands::settings::set_setting,
             commands::settings::restore_from_backup,
             commands::settings::clear_all_data,
+            // Data integrity commands
+            commands::settings::verify_ledger_integrity,
+            commands::settings::cleanup_orphaned_data,
             // Scheduled Backup commands
             commands::scheduled_backup::get_backup_settings,
             commands::scheduled_backup::update_backup_settings,
@@ -263,4 +273,92 @@ pub fn get_db(state: &AppState) -> Result<DbPool, String> {
         .as_ref()
         .cloned()
         .ok_or_else(|| "Database is locked. Please enter your master password.".to_string())
+}
+
+/// Run an incremental integrity check in the background.
+/// Only executes if the last check was more than 7 days ago.
+/// Emits `integrity-check-result` event to the frontend if issues are found.
+fn run_startup_integrity_check(app_handle: tauri::AppHandle, pool: DbPool) {
+    let conn = match pool.lock() {
+        Ok(c) => c,
+        Err(_) => {
+            println!("Integrity check: failed to lock database");
+            return;
+        }
+    };
+
+    // Check when the last integrity check was run
+    let last_check: Option<String> = conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = 'last_integrity_check'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+
+    let should_run = match last_check {
+        None => true, // Never run before
+        Some(ref ts) => {
+            // Parse the timestamp and check if it's > 7 days old
+            match chrono::DateTime::parse_from_rfc3339(ts) {
+                Ok(last) => {
+                    let elapsed = chrono::Utc::now().signed_duration_since(last);
+                    elapsed.num_days() >= 7
+                }
+                Err(_) => true, // Invalid timestamp, run anyway
+            }
+        }
+    };
+
+    if !should_run {
+        println!("Integrity check: skipped (last check was recent)");
+        return;
+    }
+
+    println!("Integrity check: running background verification...");
+
+    match commands::settings::verify_ledger_integrity_internal(&conn) {
+        Ok(result) => {
+            let total_issues = result.imbalanced_count + result.missing_entries_count + result.orphaned_entries_count;
+
+            // Save the check timestamp
+            let now = chrono::Utc::now().to_rfc3339();
+            let _ = conn.execute(
+                "INSERT INTO app_settings (key, value, updated_at) VALUES ('last_integrity_check', ?1, datetime('now'))
+                 ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')",
+                rusqlite::params![now],
+            );
+
+            if total_issues > 0 {
+                println!(
+                    "Integrity check: found {} issues ({} imbalanced, {} missing, {} orphaned)",
+                    total_issues, result.imbalanced_count, result.missing_entries_count, result.orphaned_entries_count
+                );
+
+                // Emit event to frontend
+                #[derive(serde::Serialize, Clone)]
+                struct IntegrityCheckEvent {
+                    total_issues: i64,
+                    imbalanced_count: i64,
+                    missing_entries_count: i64,
+                    orphaned_entries_count: i64,
+                }
+
+                let _ = app_handle.emit(
+                    "integrity-check-result",
+                    IntegrityCheckEvent {
+                        total_issues,
+                        imbalanced_count: result.imbalanced_count,
+                        missing_entries_count: result.missing_entries_count,
+                        orphaned_entries_count: result.orphaned_entries_count,
+                    },
+                );
+            } else {
+                println!("Integrity check: all {} transactions valid ✓", result.total_checked);
+            }
+        }
+        Err(e) => {
+            println!("Integrity check: failed — {}", e);
+        }
+    }
 }

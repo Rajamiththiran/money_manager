@@ -632,3 +632,394 @@ pub struct ClearResult {
     pub transactions_deleted: i64,
     pub budgets_deleted: i64,
 }
+
+// ======================== DATA INTEGRITY ========================
+
+/// A single integrity issue found during ledger verification.
+#[derive(Debug, Serialize, Clone)]
+pub struct IntegrityIssue {
+    pub transaction_id: i64,
+    pub transaction_type: String,
+    pub transaction_date: String,
+    pub transaction_amount: f64,
+    pub issue_type: String,   // "MISSING_ENTRIES", "WRONG_COUNT", "AMOUNT_MISMATCH", "ORPHANED_ENTRY"
+    pub description: String,
+    pub account_name: String,
+    pub category_name: Option<String>,
+    pub memo: Option<String>,
+}
+
+/// Result of a full ledger integrity check.
+#[derive(Debug, Serialize)]
+pub struct LedgerIntegrityResult {
+    pub total_checked: i64,
+    pub valid_count: i64,
+    pub imbalanced_count: i64,
+    pub missing_entries_count: i64,
+    pub orphaned_entries_count: i64,
+    pub issues: Vec<IntegrityIssue>,
+    pub checked_at: String,
+}
+
+/// Verify every transaction's journal entries against the system's rules:
+///   INCOME  → exactly 1 entry: debit = amount, credit = 0
+///   EXPENSE → exactly 1 entry: debit = 0, credit = amount
+///   TRANSFER→ exactly 2 entries: source credit = dest debit = amount
+#[tauri::command]
+pub fn verify_ledger_integrity(
+    state: State<'_, AppState>,
+) -> Result<LedgerIntegrityResult, String> {
+    let pool = crate::get_db(&state)?;
+    let conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+    verify_ledger_integrity_internal(&conn)
+}
+
+/// Internal version callable without State wrapper (used by startup check).
+pub fn verify_ledger_integrity_internal(
+    conn: &rusqlite::Connection,
+) -> Result<LedgerIntegrityResult, String> {
+    let mut issues: Vec<IntegrityIssue> = Vec::new();
+
+    // 1. Get all transactions with their details
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.id, t.type, t.date, t.amount, t.account_id, t.to_account_id,
+                    a.name AS account_name,
+                    COALESCE(c.name, '') AS category_name,
+                    t.memo
+             FROM transactions t
+             INNER JOIN accounts a ON t.account_id = a.id
+             LEFT JOIN categories c ON t.category_id = c.id
+             ORDER BY t.id",
+        )
+        .map_err(|e| format!("Failed to prepare query: {}", e))?;
+
+    let transactions: Vec<(i64, String, String, f64, i64, Option<i64>, String, String, Option<String>)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+                row.get(8)?,
+            ))
+        })
+        .map_err(|e| format!("Failed to query transactions: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read transactions: {}", e))?;
+
+    let total_checked = transactions.len() as i64;
+    let mut valid_count: i64 = 0;
+    let mut imbalanced_count: i64 = 0;
+    let mut missing_entries_count: i64 = 0;
+
+    for (txn_id, txn_type, txn_date, txn_amount, _account_id, _to_account_id, account_name, category_name, memo) in &transactions {
+        // Fetch journal entries for this transaction
+        let entries: Vec<(f64, f64, i64)> = conn
+            .prepare(
+                "SELECT debit, credit, account_id FROM journal_entries WHERE transaction_id = ?1"
+            )
+            .map_err(|e| format!("Failed to prepare journal query: {}", e))?
+            .query_map(params![txn_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .map_err(|e| format!("Failed to query journal entries: {}", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to read journal entries: {}", e))?;
+
+        let cat_name = if category_name.is_empty() {
+            None
+        } else {
+            Some(category_name.clone())
+        };
+
+        match txn_type.as_str() {
+            "INCOME" => {
+                if entries.is_empty() {
+                    missing_entries_count += 1;
+                    issues.push(IntegrityIssue {
+                        transaction_id: *txn_id,
+                        transaction_type: txn_type.clone(),
+                        transaction_date: txn_date.clone(),
+                        transaction_amount: *txn_amount,
+                        issue_type: "MISSING_ENTRIES".to_string(),
+                        description: "Income transaction has no journal entries".to_string(),
+                        account_name: account_name.clone(),
+                        category_name: cat_name,
+                        memo: memo.clone(),
+                    });
+                } else if entries.len() != 1 {
+                    imbalanced_count += 1;
+                    issues.push(IntegrityIssue {
+                        transaction_id: *txn_id,
+                        transaction_type: txn_type.clone(),
+                        transaction_date: txn_date.clone(),
+                        transaction_amount: *txn_amount,
+                        issue_type: "WRONG_COUNT".to_string(),
+                        description: format!(
+                            "Income transaction has {} journal entries (expected 1)",
+                            entries.len()
+                        ),
+                        account_name: account_name.clone(),
+                        category_name: cat_name,
+                        memo: memo.clone(),
+                    });
+                } else {
+                    let (debit, credit, _) = entries[0];
+                    if (debit - txn_amount).abs() > 0.001 || credit > 0.001 {
+                        imbalanced_count += 1;
+                        issues.push(IntegrityIssue {
+                            transaction_id: *txn_id,
+                            transaction_type: txn_type.clone(),
+                            transaction_date: txn_date.clone(),
+                            transaction_amount: *txn_amount,
+                            issue_type: "AMOUNT_MISMATCH".to_string(),
+                            description: format!(
+                                "Income entry has debit={:.2}, credit={:.2} (expected debit={:.2}, credit=0)",
+                                debit, credit, txn_amount
+                            ),
+                            account_name: account_name.clone(),
+                            category_name: cat_name,
+                            memo: memo.clone(),
+                        });
+                    } else {
+                        valid_count += 1;
+                    }
+                }
+            }
+            "EXPENSE" => {
+                if entries.is_empty() {
+                    missing_entries_count += 1;
+                    issues.push(IntegrityIssue {
+                        transaction_id: *txn_id,
+                        transaction_type: txn_type.clone(),
+                        transaction_date: txn_date.clone(),
+                        transaction_amount: *txn_amount,
+                        issue_type: "MISSING_ENTRIES".to_string(),
+                        description: "Expense transaction has no journal entries".to_string(),
+                        account_name: account_name.clone(),
+                        category_name: cat_name,
+                        memo: memo.clone(),
+                    });
+                } else if entries.len() != 1 {
+                    imbalanced_count += 1;
+                    issues.push(IntegrityIssue {
+                        transaction_id: *txn_id,
+                        transaction_type: txn_type.clone(),
+                        transaction_date: txn_date.clone(),
+                        transaction_amount: *txn_amount,
+                        issue_type: "WRONG_COUNT".to_string(),
+                        description: format!(
+                            "Expense transaction has {} journal entries (expected 1)",
+                            entries.len()
+                        ),
+                        account_name: account_name.clone(),
+                        category_name: cat_name,
+                        memo: memo.clone(),
+                    });
+                } else {
+                    let (debit, credit, _) = entries[0];
+                    if debit > 0.001 || (credit - txn_amount).abs() > 0.001 {
+                        imbalanced_count += 1;
+                        issues.push(IntegrityIssue {
+                            transaction_id: *txn_id,
+                            transaction_type: txn_type.clone(),
+                            transaction_date: txn_date.clone(),
+                            transaction_amount: *txn_amount,
+                            issue_type: "AMOUNT_MISMATCH".to_string(),
+                            description: format!(
+                                "Expense entry has debit={:.2}, credit={:.2} (expected debit=0, credit={:.2})",
+                                debit, credit, txn_amount
+                            ),
+                            account_name: account_name.clone(),
+                            category_name: cat_name,
+                            memo: memo.clone(),
+                        });
+                    } else {
+                        valid_count += 1;
+                    }
+                }
+            }
+            "TRANSFER" => {
+                if entries.is_empty() {
+                    missing_entries_count += 1;
+                    issues.push(IntegrityIssue {
+                        transaction_id: *txn_id,
+                        transaction_type: txn_type.clone(),
+                        transaction_date: txn_date.clone(),
+                        transaction_amount: *txn_amount,
+                        issue_type: "MISSING_ENTRIES".to_string(),
+                        description: "Transfer transaction has no journal entries".to_string(),
+                        account_name: account_name.clone(),
+                        category_name: cat_name,
+                        memo: memo.clone(),
+                    });
+                } else if entries.len() != 2 {
+                    imbalanced_count += 1;
+                    issues.push(IntegrityIssue {
+                        transaction_id: *txn_id,
+                        transaction_type: txn_type.clone(),
+                        transaction_date: txn_date.clone(),
+                        transaction_amount: *txn_amount,
+                        issue_type: "WRONG_COUNT".to_string(),
+                        description: format!(
+                            "Transfer has {} journal entries (expected 2)",
+                            entries.len()
+                        ),
+                        account_name: account_name.clone(),
+                        category_name: cat_name,
+                        memo: memo.clone(),
+                    });
+                } else {
+                    // One entry should be a credit (source), one a debit (destination)
+                    let total_debit: f64 = entries.iter().map(|(d, _, _)| d).sum();
+                    let total_credit: f64 = entries.iter().map(|(_, c, _)| c).sum();
+
+                    if (total_debit - txn_amount).abs() > 0.001
+                        || (total_credit - txn_amount).abs() > 0.001
+                        || (total_debit - total_credit).abs() > 0.001
+                    {
+                        imbalanced_count += 1;
+                        issues.push(IntegrityIssue {
+                            transaction_id: *txn_id,
+                            transaction_type: txn_type.clone(),
+                            transaction_date: txn_date.clone(),
+                            transaction_amount: *txn_amount,
+                            issue_type: "AMOUNT_MISMATCH".to_string(),
+                            description: format!(
+                                "Transfer debits={:.2}, credits={:.2} (expected both={:.2})",
+                                total_debit, total_credit, txn_amount
+                            ),
+                            account_name: account_name.clone(),
+                            category_name: cat_name,
+                            memo: memo.clone(),
+                        });
+                    } else {
+                        valid_count += 1;
+                    }
+                }
+            }
+            other => {
+                imbalanced_count += 1;
+                issues.push(IntegrityIssue {
+                    transaction_id: *txn_id,
+                    transaction_type: other.to_string(),
+                    transaction_date: txn_date.clone(),
+                    transaction_amount: *txn_amount,
+                    issue_type: "UNKNOWN_TYPE".to_string(),
+                    description: format!("Unknown transaction type: {}", other),
+                    account_name: account_name.clone(),
+                    category_name: cat_name,
+                    memo: memo.clone(),
+                });
+            }
+        }
+    }
+
+    // 2. Check for orphaned journal entries (entries with no matching transaction)
+    let orphaned_entries_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM journal_entries
+             WHERE transaction_id NOT IN (SELECT id FROM transactions)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    Ok(LedgerIntegrityResult {
+        total_checked,
+        valid_count,
+        imbalanced_count,
+        missing_entries_count,
+        orphaned_entries_count,
+        issues,
+        checked_at: chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+// ======================== ORPHANED DATA CLEANUP ========================
+
+/// Result of an orphaned data cleanup operation.
+#[derive(Debug, Serialize)]
+pub struct CleanupResult2 {
+    pub success: bool,
+    pub journal_entries_removed: i64,
+    pub transaction_tags_removed: i64,
+    pub transaction_photos_removed: i64,
+    pub goal_contributions_removed: i64,
+    pub total_removed: i64,
+}
+
+/// Remove orphaned records from child tables.
+/// Operates within a single SQL transaction for atomicity.
+/// This is a safety-net for edge cases (backup/restore, DB corruption).
+#[tauri::command]
+pub fn cleanup_orphaned_data(
+    state: State<'_, AppState>,
+) -> Result<CleanupResult2, String> {
+    let pool = crate::get_db(&state)?;
+    let mut conn = pool.lock().map_err(|_| "DB lock error".to_string())?;
+
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("Failed to begin transaction: {}", e))?;
+
+    // 1. Journal entries referencing non-existent transactions
+    let je_removed = tx
+        .execute(
+            "DELETE FROM journal_entries WHERE transaction_id NOT IN (SELECT id FROM transactions)",
+            [],
+        )
+        .map_err(|e| format!("Failed to clean journal entries: {}", e))? as i64;
+
+    // 2. Transaction tags referencing non-existent transactions or tags
+    let tt_removed_txn = tx
+        .execute(
+            "DELETE FROM transaction_tags WHERE transaction_id NOT IN (SELECT id FROM transactions)",
+            [],
+        )
+        .unwrap_or(0) as i64;
+
+    let tt_removed_tag = tx
+        .execute(
+            "DELETE FROM transaction_tags WHERE tag_id NOT IN (SELECT id FROM tags)",
+            [],
+        )
+        .unwrap_or(0) as i64;
+
+    let tt_removed = tt_removed_txn + tt_removed_tag;
+
+    // 3. Transaction photos referencing non-existent transactions
+    let tp_removed = tx
+        .execute(
+            "DELETE FROM transaction_photos WHERE transaction_id NOT IN (SELECT id FROM transactions)",
+            [],
+        )
+        .unwrap_or(0) as i64;
+
+    // 4. Goal contributions referencing non-existent goals
+    let gc_removed = tx
+        .execute(
+            "DELETE FROM goal_contributions WHERE goal_id NOT IN (SELECT id FROM savings_goals)",
+            [],
+        )
+        .unwrap_or(0) as i64;
+
+    tx.commit()
+        .map_err(|e| format!("Failed to commit cleanup: {}", e))?;
+
+    let total_removed = je_removed + tt_removed + tp_removed + gc_removed;
+
+    Ok(CleanupResult2 {
+        success: true,
+        journal_entries_removed: je_removed,
+        transaction_tags_removed: tt_removed,
+        transaction_photos_removed: tp_removed,
+        goal_contributions_removed: gc_removed,
+        total_removed,
+    })
+}

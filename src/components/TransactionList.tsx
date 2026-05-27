@@ -1,5 +1,5 @@
 // File: src/components/TransactionList.tsx
-import { useState } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import {
   PencilIcon,
   TrashIcon,
@@ -14,7 +14,7 @@ import {
 import clsx from "clsx";
 import type { TransactionWithDetails } from "../types/transaction";
 
-const PAGE_SIZE = 25;
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 
 interface TransactionListProps {
   transactions: TransactionWithDetails[];
@@ -32,15 +32,36 @@ export default function TransactionList({
   onViewReceipts,
 }: TransactionListProps) {
   const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
-  const totalPages = Math.max(1, Math.ceil(transactions.length / PAGE_SIZE));
-  const startIdx = (currentPage - 1) * PAGE_SIZE;
-  const paginated = transactions.slice(startIdx, startIdx + PAGE_SIZE);
+  // Track previous transactions reference to reset page on filter/data change
+  const prevTransactionsRef = useRef(transactions);
+  useEffect(() => {
+    if (prevTransactionsRef.current !== transactions) {
+      prevTransactionsRef.current = transactions;
+      setCurrentPage(1);
+    }
+  }, [transactions]);
 
-  // Reset to page 1 if transactions change and current page is out of bounds
-  if (currentPage > totalPages && totalPages > 0) {
-    setCurrentPage(1);
-  }
+  // Memoize pagination computation
+  const totalPages = useMemo(
+    () => Math.max(1, Math.ceil(transactions.length / pageSize)),
+    [transactions.length, pageSize]
+  );
+
+  const startIdx = (currentPage - 1) * pageSize;
+
+  const paginated = useMemo(
+    () => transactions.slice(startIdx, startIdx + pageSize),
+    [transactions, startIdx, pageSize]
+  );
+
+  // Clamp page if out of bounds (e.g. after page size change)
+  useEffect(() => {
+    if (currentPage > totalPages && totalPages > 0) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   if (transactions.length === 0) {
     return (
@@ -309,11 +330,30 @@ export default function TransactionList({
       {/* ─── Pagination ─── */}
       {totalPages > 1 && (
         <div className="flex items-center justify-between mt-4 px-2">
-          <p className="text-sm text-gray-600 dark:text-gray-400">
-            Showing {startIdx + 1}–
-            {Math.min(startIdx + PAGE_SIZE, transactions.length)} of{" "}
-            {transactions.length}
-          </p>
+          <div className="flex items-center gap-3">
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              Showing {startIdx + 1}–
+              {Math.min(startIdx + pageSize, transactions.length)} of{" "}
+              {transactions.length}
+            </p>
+            <div className="flex items-center gap-1.5">
+              <label className="text-xs text-gray-500 dark:text-gray-400">Per page:</label>
+              <select
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setCurrentPage(1);
+                }}
+                className="px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                {PAGE_SIZE_OPTIONS.map((size) => (
+                  <option key={size} value={size}>
+                    {size}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
           <div className="flex items-center gap-1">
             <button
               onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}

@@ -32,6 +32,9 @@ import {
   Image,
   Tag as TagIcon,
   FileSpreadsheet,
+  ShieldCheck,
+  ChevronDown,
+  Sparkles,
 } from "lucide-react";
 import { useTheme } from "../contexts/ThemeContext";
 import { useAccentColor } from "../contexts/AccentColorContext";
@@ -230,6 +233,38 @@ interface DbStats {
   budgets: number;
 }
 
+// Data Integrity types
+interface IntegrityIssue {
+  transaction_id: number;
+  transaction_type: string;
+  transaction_date: string;
+  transaction_amount: number;
+  issue_type: string;
+  description: string;
+  account_name: string;
+  category_name: string | null;
+  memo: string | null;
+}
+
+interface LedgerIntegrityResult {
+  total_checked: number;
+  valid_count: number;
+  imbalanced_count: number;
+  missing_entries_count: number;
+  orphaned_entries_count: number;
+  issues: IntegrityIssue[];
+  checked_at: string;
+}
+
+interface CleanupResult2 {
+  success: boolean;
+  journal_entries_removed: number;
+  transaction_tags_removed: number;
+  transaction_photos_removed: number;
+  goal_contributions_removed: number;
+  total_removed: number;
+}
+
 // ——— Main Component ———————————————————————————————————
 export default function SettingsView() {
   const { theme, toggleTheme } = useTheme();
@@ -279,6 +314,13 @@ export default function SettingsView() {
   const [backupStatus, setBackupStatus] = useState<BackupStatus | null>(null);
   const [isAutoBackingUp, setIsAutoBackingUp] = useState(false);
   const [isSavingBackupSettings, setIsSavingBackupSettings] = useState(false);
+
+  // Data integrity state
+  const [integrityResult, setIntegrityResult] = useState<LedgerIntegrityResult | null>(null);
+  const [isCheckingIntegrity, setIsCheckingIntegrity] = useState(false);
+  const [cleanupResult, setCleanupResult] = useState<CleanupResult2 | null>(null);
+  const [isCleaning, setIsCleaning] = useState(false);
+  const [showIntegrityDetails, setShowIntegrityDetails] = useState(false);
 
   useEffect(() => {
     loadDbStats();
@@ -1166,6 +1208,211 @@ export default function SettingsView() {
               </p>
             </div>
           </button>
+        </div>
+
+        {/* ─── Data Integrity ─── */}
+        <div className="mt-8">
+          <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-gray-500" />
+            Data Integrity
+          </h4>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {/* Verify Integrity Button */}
+            <button
+              onClick={async () => {
+                setIsCheckingIntegrity(true);
+                setIntegrityResult(null);
+                setShowIntegrityDetails(false);
+                try {
+                  const result = await invoke<LedgerIntegrityResult>("verify_ledger_integrity");
+                  setIntegrityResult(result);
+                  if (result.imbalanced_count === 0 && result.missing_entries_count === 0 && result.orphaned_entries_count === 0) {
+                    success("All Clear", `All ${result.total_checked} transactions verified successfully.`);
+                  }
+                } catch (err) {
+                  showError("Integrity Check Failed", String(err));
+                } finally {
+                  setIsCheckingIntegrity(false);
+                }
+              }}
+              disabled={isCheckingIntegrity}
+              className="flex items-center gap-3 p-4 rounded-lg border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors text-left disabled:opacity-50"
+            >
+              <div className="p-2 rounded-lg bg-emerald-100 dark:bg-emerald-900/30">
+                {isCheckingIntegrity ? (
+                  <RefreshCw className="w-5 h-5 text-emerald-600 dark:text-emerald-400 animate-spin" />
+                ) : (
+                  <ShieldCheck className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                )}
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-900 dark:text-white">
+                  {isCheckingIntegrity ? "Verifying..." : "Verify Data Integrity"}
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Check journal entries for consistency
+                </p>
+              </div>
+            </button>
+
+            {/* Cleanup Button */}
+            <button
+              onClick={async () => {
+                const confirmed = await ask(
+                  "This will remove any orphaned records (entries referencing deleted data). This is safe but irreversible. Continue?",
+                  { title: "Clean Up Orphaned Data", kind: "warning" }
+                );
+                if (!confirmed) return;
+                setIsCleaning(true);
+                setCleanupResult(null);
+                try {
+                  const result = await invoke<CleanupResult2>("cleanup_orphaned_data");
+                  setCleanupResult(result);
+                  if (result.total_removed === 0) {
+                    success("No Issues Found", "No orphaned data detected. Your database is clean.");
+                  } else {
+                    info("Cleanup Complete", `Removed ${result.total_removed} orphaned record${result.total_removed !== 1 ? "s" : ""}.`);
+                  }
+                } catch (err) {
+                  showError("Cleanup Failed", String(err));
+                } finally {
+                  setIsCleaning(false);
+                }
+              }}
+              disabled={isCleaning}
+              className="flex items-center gap-3 p-4 rounded-lg border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors text-left disabled:opacity-50"
+            >
+              <div className="p-2 rounded-lg bg-violet-100 dark:bg-violet-900/30">
+                {isCleaning ? (
+                  <RefreshCw className="w-5 h-5 text-violet-600 dark:text-violet-400 animate-spin" />
+                ) : (
+                  <Sparkles className="w-5 h-5 text-violet-600 dark:text-violet-400" />
+                )}
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-900 dark:text-white">
+                  {isCleaning ? "Cleaning..." : "Clean Up Orphaned Data"}
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Remove records referencing deleted data
+                </p>
+              </div>
+            </button>
+          </div>
+
+          {/* Integrity Result Display */}
+          {integrityResult && (
+            <div className={`mt-3 p-4 rounded-lg border ${
+              integrityResult.imbalanced_count === 0 && integrityResult.missing_entries_count === 0 && integrityResult.orphaned_entries_count === 0
+                ? "border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/10"
+                : "border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/10"
+            }`}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {integrityResult.imbalanced_count === 0 && integrityResult.missing_entries_count === 0 && integrityResult.orphaned_entries_count === 0 ? (
+                    <>
+                      <Check className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                      <span className="text-sm font-medium text-emerald-700 dark:text-emerald-300">
+                        All {integrityResult.total_checked} transactions verified
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+                      <span className="text-sm font-medium text-amber-700 dark:text-amber-300">
+                        {integrityResult.imbalanced_count + integrityResult.missing_entries_count} issue{integrityResult.imbalanced_count + integrityResult.missing_entries_count !== 1 ? "s" : ""} found
+                        {integrityResult.orphaned_entries_count > 0 && ` + ${integrityResult.orphaned_entries_count} orphaned entries`}
+                      </span>
+                    </>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    Checked {new Date(integrityResult.checked_at).toLocaleString()}
+                  </span>
+                  {integrityResult.issues.length > 0 && (
+                    <button
+                      onClick={() => setShowIntegrityDetails(!showIntegrityDetails)}
+                      className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                    >
+                      <ChevronDown className={`w-4 h-4 text-gray-500 transition-transform ${showIntegrityDetails ? "rotate-180" : ""}`} />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Issue Details (expandable) */}
+              {showIntegrityDetails && integrityResult.issues.length > 0 && (
+                <div className="mt-3 space-y-2 max-h-64 overflow-y-auto">
+                  {integrityResult.issues.map((issue) => (
+                    <button
+                      key={issue.transaction_id}
+                      onClick={() => {
+                        window.dispatchEvent(
+                          new CustomEvent("navigate-to-transactions", {
+                            detail: { transactionId: issue.transaction_id },
+                          })
+                        );
+                      }}
+                      className="w-full flex items-center justify-between p-2.5 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 hover:border-amber-300 dark:hover:border-amber-600 transition-colors text-left"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                          issue.transaction_type === "INCOME"
+                            ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300"
+                            : issue.transaction_type === "EXPENSE"
+                            ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300"
+                            : "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+                        }`}>
+                          {issue.transaction_type}
+                        </span>
+                        <div>
+                          <p className="text-xs font-medium text-gray-900 dark:text-white">
+                            {issue.account_name}{issue.category_name && ` · ${issue.category_name}`}
+                          </p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400">
+                            {issue.description}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="text-right flex-shrink-0">
+                        <p className="text-xs font-medium text-gray-900 dark:text-white">
+                          Rs {issue.transaction_amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+                        </p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                          {new Date(issue.transaction_date).toLocaleDateString()}
+                        </p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Cleanup Result Display */}
+          {cleanupResult && cleanupResult.total_removed > 0 && (
+            <div className="mt-3 p-3 rounded-lg border border-blue-200 dark:border-blue-800/50 bg-blue-50 dark:bg-blue-900/10">
+              <p className="text-sm font-medium text-blue-700 dark:text-blue-300 mb-1">
+                Cleanup Results
+              </p>
+              <div className="grid grid-cols-2 gap-1 text-xs text-blue-600 dark:text-blue-400">
+                {cleanupResult.journal_entries_removed > 0 && (
+                  <span>Journal entries: {cleanupResult.journal_entries_removed}</span>
+                )}
+                {cleanupResult.transaction_tags_removed > 0 && (
+                  <span>Transaction tags: {cleanupResult.transaction_tags_removed}</span>
+                )}
+                {cleanupResult.transaction_photos_removed > 0 && (
+                  <span>Photos: {cleanupResult.transaction_photos_removed}</span>
+                )}
+                {cleanupResult.goal_contributions_removed > 0 && (
+                  <span>Goal contributions: {cleanupResult.goal_contributions_removed}</span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="mt-8">
